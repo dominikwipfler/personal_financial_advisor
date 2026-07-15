@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+build/
+
+# Umgebungsvariablen / Secrets
+.env
+
+# Tooling-Caches
+.ruff_cache/
+.pytest_cache/
+.ty_cache/
+
+# IDE
+.idea/
+.vscode/
+
+# Betriebssystem
+.DS_Store
+Thumbs.db

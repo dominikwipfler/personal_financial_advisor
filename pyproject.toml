@@ -1,0 +1,44 @@
+[project]
+name = "personal-financial-advisor"
+version = "0.1.0"
+description = "Persönlicher Finanzberater-Chatbot: Nutzer-Profiling per Dialog, Web-Recherche und personalisierte Anlagestrategie (Pydantic AI)."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic-ai>=1.81.0",
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
+    # Recherche-Tools: Websuche ohne API-Key + Marktdaten via Yahoo Finance
+    "ddgs>=9.0.0",
+    "yfinance>=0.2.50",
+    "beautifulsoup4>=4.12.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.6,<0.12"]
+build-backend = "uv_build"
+
+[tool.uv]
+# Installation: uv sync
+# Start: uv run uvicorn advisor.app:app --reload
+
+[tool.uv.build-backend]
+module-name = "advisor"
+
+[dependency-groups]
+dev = ["ty>=0.0.29"]
+
+[tool.ty.environment]
+python-version = "3.10"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+ignore = [
+    "E501",   # line too long
+]
