@@ -129,6 +129,39 @@ uv run uvicorn advisor.app:app --reload
 Danach <http://localhost:8000> öffnen – die Chat-UI lädt beim ersten Aufruf
 vom CDN und wird lokal gecacht.
 
+### Nutzung mit dem HKA-LLM-Server (empfohlen)
+
+Der HKA-Server <https://llm.hka-cloud.de> ist ein LiteLLM-Proxy und wird vom
+Projekt direkt unterstützt:
+
+1. Unter <https://llm.hka-cloud.de/ui/> anmelden und einen **Virtual Key**
+   anlegen (beginnt mit `sk-`).
+2. In der `.env` eintragen:
+
+   ```env
+   USE_LITELLM=1
+   LITELLM_SERVER_URL=https://llm.hka-cloud.de
+   LITELLM_API_KEY=sk-...
+   LITELLM_MODEL=gpt-4o        # eine Modell-ID aus der Liste des Servers
+   ```
+
+3. Verfügbare Modelle prüfen (UI → „Models“ oder):
+
+   ```bash
+   curl -s https://llm.hka-cloud.de/v1/models -H "Authorization: Bearer sk-..."
+   ```
+
+   Alle vom Key erlaubten Modelle erscheinen zusätzlich automatisch im
+   Modell-Selector der Chat-UI.
+
+**Modell-Empfehlung für dieses Projekt:** Der Berater braucht zuverlässiges
+mehrstufiges Tool-Calling (14+ Profil-Speicherungen, Recherche-Ketten) und
+gutes Deutsch. In dieser Reihenfolge wählen, je nachdem was der Server
+anbietet: `gpt-4o` bzw. `gpt-4.1` oder ein `claude-sonnet-*` (beste
+Dialog-/Tool-Qualität) → `gpt-4o-mini` / `gpt-4.1-mini` (günstiger, für Tests
+ausreichend, überspringt aber eher mal Phasen). Kleine lokale Modelle
+(z. B. 7B-Klasse) sind für die Tool-Ketten nicht zuverlässig genug.
+
 ### Modell/Provider wechseln
 
 - `ADVISOR_MODEL` in `.env` setzt das Modell im pydantic-ai-Format
