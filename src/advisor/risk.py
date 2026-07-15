@@ -38,8 +38,10 @@ SIGMA_ANLEIHEN = 0.05      # Volatilität EUR-Anleihen
 KORRELATION = 0.2          # Korrelation Aktien/Anleihen (leicht positiv angenommen)
 
 # Risikoklasse (1–5) -> Risikoaversionsparameter a der Nutzenfunktion
-# U = E(x) − a·Var(x). Kleines a = geringe Risikoaversion.
-RISIKOAVERSION_JE_KLASSE: dict[int, float] = {1: 7.0, 2: 4.5, 3: 3.0, 4: 2.0, 5: 1.3}
+# U = E(x) − a·Var(x). Kleines a = geringe Risikoaversion. Kalibriert so,
+# dass die nutzenoptimalen Aktienquoten übliche Musterportfolios treffen
+# (ca. 17 % / 26 % / 51 % / 68 % / ~100 % vor Kappungen).
+RISIKOAVERSION_JE_KLASSE: dict[int, float] = {1: 7.0, 2: 4.0, 3: 1.9, 4: 1.4, 5: 0.9}
 
 KLASSEN_NAMEN: dict[int, str] = {
     1: "sehr defensiv",
