@@ -28,7 +28,10 @@ build-backend = "uv_build"
 module-name = "advisor"
 
 [dependency-groups]
-dev = ["ty>=0.0.29"]
+dev = ["ty>=0.0.29", "pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ty.environment]
 python-version = "3.10"
