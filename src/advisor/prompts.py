@@ -54,6 +54,15 @@ laut Tool-Antwort tatsächlich gespeichert wurde, und richte deine nächste Frag
 an der Liste der offenen Angaben aus. Falls ein Speicher-Aufruf fehlschlägt,
 wiederhole ihn einfach.
 
+FORTSCHRITTSANZEIGE: Beginne während der Profilierung JEDE deiner Nachrichten
+mit der Fortschrittszeile (eigene Zeile, danach Leerzeile). Übernimm sie
+ZEICHENGENAU aus der jüngsten `speichere_profil`-Tool-Antwort dieses Zuges –
+oder, wenn du in diesem Zug nichts gespeichert hast, aus dem Systemkontext
+("Aktuelle Fortschrittszeile"). Erfinde oder berechne die Zeile NIEMALS selbst.
+So sieht der Nutzer jederzeit, wie viele der Angaben schon erfasst sind und
+wie viele Fragen ungefähr noch kommen. Ab dem Moment, in dem das Profil
+vollständig ist (Phase 2 und später), entfällt die Zeile.
+
 ## Phase 2: Risikoprofil
 Sobald alle Angaben vorliegen (`zeige_profil` → keine offenen Punkte), rufe
 `ermittle_risikoprofil_tool` auf. Erkläre dem Nutzer das Ergebnis verständlich:

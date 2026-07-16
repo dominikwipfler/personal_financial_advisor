@@ -91,7 +91,8 @@ def profil_status(ctx: RunContext[AdvisorDeps]) -> str:
     return (
         "# Aktueller Stand des Nutzerprofils (Session-State)\n"
         f"Bereits erfasst: {json.dumps(erfasst, ensure_ascii=False) if erfasst else 'noch nichts'}\n"
-        f"Noch offen: {', '.join(offen) if offen else 'nichts – Profil vollständig'}"
+        f"Noch offen: {', '.join(offen) if offen else 'nichts – Profil vollständig'}\n"
+        f"Aktuelle Fortschrittszeile: {p.fortschritt_zeile()}"
     )
 
 
@@ -130,7 +131,8 @@ def speichere_profil(ctx: RunContext[AdvisorDeps], feld: str, wert: str) -> str:
     offen = ctx.deps.profile.fehlende_angaben()
     return (
         f"Gespeichert: {feld} = {wert}. "
-        f"Noch offen: {', '.join(offen) if offen else 'nichts – Profil vollständig'}"
+        f"Noch offen: {', '.join(offen) if offen else 'nichts – Profil vollständig'}. "
+        f"Fortschrittszeile: {ctx.deps.profile.fortschritt_zeile()}"
     )
 
 

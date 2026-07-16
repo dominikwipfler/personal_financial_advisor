@@ -96,25 +96,36 @@ class UserProfile(BaseModel):
 
     def fehlende_angaben(self) -> list[str]:
         """Noch nicht erfragte Pflichtangaben, in sinnvoller Frage-Reihenfolge."""
-        reihenfolge: list[tuple[str, object]] = [
-            ("anlageziel", self.anlageziel),
-            ("zeithorizont_jahre", self.zeithorizont_jahre),
-            ("alter", self.alter),
-            ("land_steuerkontext", self.land_steuerkontext),
-            ("anlageerfahrung", self.anlageerfahrung),
-            ("vorhandene_anlagen", self.vorhandene_anlagen),
-            ("depot_vorhanden", self.depot_vorhanden),
-            ("monatliche_sparrate_eur", self.monatliche_sparrate_eur),
-            ("einmalbetrag_eur", self.einmalbetrag_eur),
-            ("schulden", self.schulden),
-            ("notgroschen_monatsausgaben", self.notgroschen_monatsausgaben),
-            ("reaktion_kursverlust_20_prozent", self.reaktion_kursverlust_20_prozent),
-            ("max_akzeptierter_verlust_prozent", self.max_akzeptierter_verlust_prozent),
-        ]
-        return [name for name, wert in reihenfolge if wert is None]
+        return [name for name in PFLICHTANGABEN if getattr(self, name) is None]
 
     def ist_vollstaendig(self) -> bool:
         return not self.fehlende_angaben()
+
+    def fortschritt_zeile(self) -> str:
+        """Fortschrittsanzeige für die Profilierung, z. B. '6/13 · ▓▓▓▓▓▓░░░░░░░'."""
+        gesamt = len(PFLICHTANGABEN)
+        erfasst = gesamt - len(self.fehlende_angaben())
+        balken = "▓" * erfasst + "░" * (gesamt - erfasst)
+        return f"📋 Profil-Fortschritt: {erfasst}/{gesamt} Angaben · {balken}"
+
+
+# Pflichtangaben in sinnvoller Frage-Reihenfolge; Basis für Dialogsteuerung
+# und Fortschrittsanzeige.
+PFLICHTANGABEN: list[str] = [
+    "anlageziel",
+    "zeithorizont_jahre",
+    "alter",
+    "land_steuerkontext",
+    "anlageerfahrung",
+    "vorhandene_anlagen",
+    "depot_vorhanden",
+    "monatliche_sparrate_eur",
+    "einmalbetrag_eur",
+    "schulden",
+    "notgroschen_monatsausgaben",
+    "reaktion_kursverlust_20_prozent",
+    "max_akzeptierter_verlust_prozent",
+]
 
 
 @dataclass
