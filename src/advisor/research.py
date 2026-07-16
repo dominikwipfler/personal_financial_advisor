@@ -33,7 +33,9 @@ def web_suche(suchbegriff: str, max_treffer: int = 8) -> str:
     try:
         from ddgs import DDGS
 
-        treffer = list(DDGS().text(suchbegriff, region="de-de", max_results=max_treffer))
+        treffer = list(
+            DDGS(timeout=15).text(suchbegriff, region="de-de", max_results=max_treffer)
+        )
     except Exception as e:  # noqa: BLE001
         return f"Websuche fehlgeschlagen: {e}"
 

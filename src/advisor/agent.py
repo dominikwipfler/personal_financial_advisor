@@ -9,9 +9,11 @@ austauschbar.
 from __future__ import annotations
 
 import json
+from typing import Any, cast
 
 from pydantic_ai import Agent, RunContext
 from pydantic_ai.models import Model
+from pydantic_ai.models.openai import OpenAIChatModelSettings
 
 from advisor import research
 from advisor.config import (
@@ -19,6 +21,9 @@ from advisor.config import (
     LITELLM_API_KEY,
     LITELLM_MODEL,
     LITELLM_SERVER_URL,
+    MAX_TOKENS,
+    REASONING_EFFORT,
+    REQUEST_TIMEOUT_S,
     use_litellm,
 )
 from advisor.profile import AdvisorDeps
@@ -41,11 +46,29 @@ else:
     # Provider direkt (z. B. OPENAI_API_KEY / ANTHROPIC_API_KEY aus .env).
     _model = DEFAULT_MODEL
 
+# Zuverlässigkeits-Einstellungen:
+# - timeout: hängende Anfragen brechen ab, statt die UI zu blockieren.
+# - max_tokens: genug Raum für Reasoning + Tool-Aufrufe, damit Tool-Argumente
+#   nicht mitten im JSON abgeschnitten werden (beobachtet mit gpt-oss-120b).
+# - openai_reasoning_effort: "low" beschleunigt die vielen kleinen
+#   Profil-Speicher-Runden deutlich; wird von Nicht-Reasoning-Modellen ignoriert.
+_ALLOWED_EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
+_effort = REASONING_EFFORT if REASONING_EFFORT in _ALLOWED_EFFORTS else "low"
+_model_settings = OpenAIChatModelSettings(
+    timeout=REQUEST_TIMEOUT_S,
+    max_tokens=MAX_TOKENS,
+    openai_reasoning_effort=cast(Any, _effort),
+)
+
 try:
     agent: Agent[AdvisorDeps] = Agent(
         _model,
         deps_type=AdvisorDeps,
         instructions=SYSTEM_PROMPT,
+        model_settings=_model_settings,
+        # Abgeschnittene/ungültige Tool-Argumente: bis zu 3 Korrekturversuche,
+        # bevor ein Fehler an die UI durchschlägt.
+        retries=3,
     )
 except Exception as e:  # noqa: BLE001
     raise RuntimeError(

@@ -37,6 +37,16 @@ LITELLM_SERVER_URL = LITELLM_SERVER_URL_ENV or "http://localhost:4000"
 LITELLM_API_KEY = LITELLM_API_KEY_ENV or ""
 LITELLM_MODEL = os.environ.get("LITELLM_MODEL", "").strip() or "gpt-4o-mini"
 
+# Reasoning-Aufwand für Reasoning-Modelle (z. B. gpt-oss-120b): low|medium|high.
+# "low" hält die Dialog-Latenz klein und reduziert abgeschnittene Antworten;
+# bei Bedarf über die Umgebungsvariable erhöhen.
+REASONING_EFFORT = os.environ.get("ADVISOR_REASONING_EFFORT", "").strip().lower() or "low"
+
+# Timeout (Sekunden) und Token-Limit pro Modell-Anfrage – verhindert, dass die
+# Chat-UI bei einer hängenden Anfrage dauerhaft blockiert.
+REQUEST_TIMEOUT_S = float(os.environ.get("ADVISOR_REQUEST_TIMEOUT_S", "") or 120)
+MAX_TOKENS = int(os.environ.get("ADVISOR_MAX_TOKENS", "") or 6000)
+
 
 def get_litellm_supported_models(timeout_s: float = 5.0) -> list[str]:
     """Modell-IDs vom konfigurierten LiteLLM-Server abrufen (GET /v1/models).
