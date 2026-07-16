@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # Verständlich formulierte Antwortoptionen statt bloßem "hoch/mittel/niedrig":
 # Reaktion auf einen hypothetischen Kursverlust von 20 % (Stresstest-Gedanke,
@@ -27,6 +27,54 @@ ReaktionKursverlust = Literal[
 ]
 
 Anlageerfahrung = Literal["keine", "grundkenntnisse", "fortgeschritten", "sehr_erfahren"]
+
+
+def _normiere(wert: str) -> str:
+    """Freitext für den Stichwort-Vergleich vereinheitlichen."""
+    return wert.strip().lower().replace("-", " ").replace("_", " ").replace("/", " ")
+
+
+def _normiere_anlageerfahrung(wert: str) -> str:
+    """Freie Formulierungen ('Anfänger/Grundkenntnisse') auf die Literale mappen."""
+    s = _normiere(wert)
+    if "fortgeschritten" in s:
+        return "fortgeschritten"
+    if any(k in s for k in ("grund", "anfänger", "anfaenger", "basis", "wenig", "etwas")):
+        return "grundkenntnisse"
+    if any(k in s for k in ("keine", "gar nicht", "noch nie", "null")):
+        return "keine"
+    if any(k in s for k in ("sehr erfahren", "erfahren", "experte", "profi")):
+        return "sehr_erfahren"
+    return wert
+
+
+def _normiere_reaktion(wert: str) -> str:
+    """Freie Formulierungen der Verlust-Reaktion auf die Literale mappen."""
+    s = _normiere(wert)
+    exakt = s.replace(" ", "_")
+    if exakt in ("alles_verkaufen", "teilweise_verkaufen", "beunruhigt_halten", "gelassen_halten", "nachkaufen"):
+        return exakt
+    if any(k in s for k in ("nachkaufen", "nachlegen", "günstig kaufen", "guenstig kaufen")):
+        return "nachkaufen"
+    if "teil" in s:
+        return "teilweise_verkaufen"
+    if any(k in s for k in ("beunruhigt", "nervös", "nervoes", "unruhig", "schlecht schlafen")):
+        return "beunruhigt_halten"
+    if any(k in s for k in ("gelassen", "abwarten", "aussitzen", "nichts tun", "nicht verkaufen", "halten")):
+        return "gelassen_halten"
+    if "verkauf" in s:
+        return "alles_verkaufen"
+    return wert
+
+
+def _normiere_bool(wert: str) -> str | bool:
+    """Deutsche Ja/Nein-Antworten in Booleans übersetzen."""
+    s = _normiere(wert)
+    if s in ("ja", "j", "klar", "genau", "stimmt", "richtig", "vorhanden"):
+        return True
+    if s in ("nein", "n", "nö", "noe", "keine", "keins", "nicht vorhanden"):
+        return False
+    return wert
 
 
 class UserProfile(BaseModel):
@@ -93,6 +141,27 @@ class UserProfile(BaseModel):
     risikoklasse: int | None = Field(
         default=None, description="Ermittelte Risikoklasse 1 (sehr defensiv) bis 5 (sehr offensiv)"
     )
+
+    # --- Tolerante Eingabe-Normalisierung ------------------------------------
+    # Das LLM übergibt gelegentlich freie Formulierungen statt der exakten
+    # Literale (z. B. "Anfänger/Grundkenntnisse" oder "ja"). Statt einen
+    # Validierungsfehler zurückzugeben (kostet eine Retry-Runde und irritiert
+    # in der UI), werden gängige Formulierungen vor der Validierung gemappt.
+
+    @field_validator("anlageerfahrung", mode="before")
+    @classmethod
+    def _v_anlageerfahrung(cls, v: object) -> object:
+        return _normiere_anlageerfahrung(v) if isinstance(v, str) else v
+
+    @field_validator("reaktion_kursverlust_20_prozent", mode="before")
+    @classmethod
+    def _v_reaktion(cls, v: object) -> object:
+        return _normiere_reaktion(v) if isinstance(v, str) else v
+
+    @field_validator("depot_vorhanden", "hat_konsumschulden", mode="before")
+    @classmethod
+    def _v_bool(cls, v: object) -> object:
+        return _normiere_bool(v) if isinstance(v, str) else v
 
     def fehlende_angaben(self) -> list[str]:
         """Noch nicht erfragte Pflichtangaben, in sinnvoller Frage-Reihenfolge."""
