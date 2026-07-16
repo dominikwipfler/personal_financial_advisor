@@ -26,7 +26,7 @@ from advisor.config import (
     REQUEST_TIMEOUT_S,
     use_litellm,
 )
-from advisor.profile import AdvisorDeps
+from advisor.profile import AdvisorDeps, UserProfile
 from advisor.prompts import SYSTEM_PROMPT
 from advisor.risk import ermittle_risikoprofil
 from advisor.strategy import erstelle_strategie
@@ -131,6 +131,37 @@ def speichere_profil(ctx: RunContext[AdvisorDeps], feld: str, wert: str) -> str:
     offen = ctx.deps.profile.fehlende_angaben()
     return (
         f"Gespeichert: {feld} = {wert}. "
+        f"Noch offen: {', '.join(offen) if offen else 'nichts – Profil vollständig'}. "
+        f"Fortschrittszeile: {ctx.deps.profile.fortschritt_zeile()}"
+    )
+
+
+@agent.tool
+def speichere_profil_mehrere(ctx: RunContext[AdvisorDeps], angaben: UserProfile) -> str:
+    """Speichert MEHRERE Nutzerangaben auf einmal im Profil (Session-State).
+
+    Bevorzuge dieses Tool, wenn eine Nutzernachricht mehr als eine Angabe
+    enthält: alle erkannten Angaben in EINEM Aufruf übergeben. Nur die Felder
+    setzen, die der Nutzer tatsächlich genannt hat; alle übrigen weglassen.
+    Das Feld `risikoklasse` niemals setzen (wird berechnet).
+
+    Args:
+        angaben: Die erkannten Profilfelder mit ihren Werten.
+    """
+    p = ctx.deps.profile
+    neue_werte = angaben.model_dump(exclude_none=True)
+    neue_werte.pop("risikoklasse", None)
+    if not neue_werte:
+        return "Keine Angaben übergeben – bitte die erkannten Felder setzen."
+
+    daten = p.model_dump()
+    daten.update(neue_werte)
+    ctx.deps.profile = type(p).model_validate(daten)
+
+    offen = ctx.deps.profile.fehlende_angaben()
+    gespeichert = ", ".join(f"{k}={v}" for k, v in neue_werte.items())
+    return (
+        f"Gespeichert: {gespeichert}. "
         f"Noch offen: {', '.join(offen) if offen else 'nichts – Profil vollständig'}. "
         f"Fortschrittszeile: {ctx.deps.profile.fortschritt_zeile()}"
     )
