@@ -41,6 +41,28 @@ class Position(BaseModel):
             "in die Ziel-Bausteine passt (Einzelaktien, aktive Fonds, Krypto, …)"
         )
     )
+    einstandswert_eur: float | None = Field(
+        default=None,
+        description=(
+            "Ursprünglicher Kaufwert der Position in EUR (falls bekannt) – "
+            "ermöglicht die Schätzung von steuerpflichtigem Gewinn/Verlust bei Verkauf"
+        ),
+        ge=0,
+    )
+
+
+# Deutsche Kapitalertragsbesteuerung (vereinfachte Schätzwerte, s. LIMITATIONS):
+# Abgeltungsteuer 25 % + Solidaritätszuschlag 5,5 % darauf = 26,375 %
+# (ohne Kirchensteuer, ohne individuelle Günstigerprüfung).
+ABGELTUNGSTEUER_SATZ = 0.26375
+# Teilfreistellung für Aktienfonds/-ETFs (§ 20 InvStG): 30 % der Erträge steuerfrei.
+TEILFREISTELLUNG: dict[str, float] = {
+    "aktien_welt_industrielaender": 0.30,
+    "aktien_schwellenlaender": 0.30,
+    "anleihen_eur_investment_grade": 0.0,
+    "geldmarkt_tagesgeld": 0.0,
+    "gold": 0.0,
+}
 
 
 def _gebuehr(betrag: float, prozent: float, minimum: float) -> float:
@@ -58,12 +80,20 @@ def erstelle_umschichtungsplan(
 ) -> dict[str, Any]:
     """Kauf-/Verkaufsliste vom Ist-Depot zur Ziel-Allokation berechnen."""
     ist: dict[str, float] = {}
+    einstand: dict[str, float] = {}
+    einstand_vollstaendig: dict[str, bool] = {}
     sonstige: list[Position] = []
     for pos in positionen:
         if pos.kategorie == "sonstiges":
             sonstige.append(pos)
+            continue
+        k = pos.kategorie
+        ist[k] = ist.get(k, 0.0) + pos.wert_eur
+        einstand_vollstaendig.setdefault(k, True)
+        if pos.einstandswert_eur is None:
+            einstand_vollstaendig[k] = False
         else:
-            ist[pos.kategorie] = ist.get(pos.kategorie, 0.0) + pos.wert_eur
+            einstand[k] = einstand.get(k, 0.0) + pos.einstandswert_eur
 
     basis = sum(ist.values()) + max(neues_kapital_eur, 0.0)
     if basis <= 0:
@@ -87,14 +117,38 @@ def erstelle_umschichtungsplan(
         ueber_pp = uebergewicht / basis * 100
         if ueber_pp >= schwelle_prozentpunkte and uebergewicht >= min_handelsbetrag_eur:
             geb = _gebuehr(uebergewicht, gebuehr_prozent, gebuehr_min_eur)
-            verkaeufe.append(
-                {
-                    "kategorie": k,
-                    "betrag_eur": round(uebergewicht, 2),
-                    "gebuehr_eur": geb,
-                    "begruendung": f"Übergewicht von {ueber_pp:.1f} Prozentpunkten gegenüber der Ziel-Allokation",
-                }
-            )
+            trade: dict[str, Any] = {
+                "kategorie": k,
+                "betrag_eur": round(uebergewicht, 2),
+                "gebuehr_eur": geb,
+                "begruendung": f"Übergewicht von {ueber_pp:.1f} Prozentpunkten gegenüber der Ziel-Allokation",
+            }
+            # Steuer-Schätzung: anteiliger Gewinn/Verlust des Verkaufs, sofern
+            # der Einstandswert aller Positionen der Kategorie bekannt ist.
+            if einstand_vollstaendig.get(k) and ist.get(k, 0) > 0:
+                gewinn_quote = (ist[k] - einstand[k]) / ist[k]
+                gewinn = uebergewicht * gewinn_quote
+                trade["geschaetzter_gewinn_eur"] = round(gewinn, 2)
+                tf = TEILFREISTELLUNG.get(k, 0.0)
+                if gewinn > 0:
+                    steuer = gewinn * (1 - tf) * ABGELTUNGSTEUER_SATZ
+                    trade["geschaetzte_steuer_eur"] = round(steuer, 2)
+                    if tf > 0:
+                        trade["steuer_hinweis"] = (
+                            f"Teilfreistellung {tf:.0%} für Aktienfonds berücksichtigt; "
+                            "Sparer-Pauschbetrag mindert die Steuer zusätzlich."
+                        )
+                else:
+                    trade["geschaetzte_steuer_eur"] = 0.0
+                    trade["steuer_hinweis"] = (
+                        "Realisierter Verlust – landet im Verlustverrechnungstopf und kann "
+                        "mit steuerpflichtigen Gewinnen (auch künftiger Jahre) verrechnet werden."
+                    )
+            else:
+                trade["steuer_hinweis"] = (
+                    "Einstandswert unbekannt – Gewinn/Steuer nicht schätzbar; beim Nutzer erfragen."
+                )
+            verkaeufe.append(trade)
             verkaufs_erloes += uebergewicht
         else:
             halten_hinweise.append(
@@ -134,6 +188,7 @@ def erstelle_umschichtungsplan(
 
     gebuehren_summe = round(sum(t["gebuehr_eur"] for t in verkaeufe + kaeufe), 2)
     handelsvolumen = round(sum(t["betrag_eur"] for t in verkaeufe + kaeufe), 2)
+    steuer_summe = round(sum(t.get("geschaetzte_steuer_eur", 0.0) for t in verkaeufe), 2)
 
     hinweise = [
         "Reihenfolge: erst neues Kapital einsetzen, dann (falls nötig) verkaufen – "
@@ -141,9 +196,26 @@ def erstelle_umschichtungsplan(
     ]
     if verkaeufe:
         hinweise.append(
-            "Verkäufe können Abgeltungsteuer auf realisierte Gewinne auslösen (in Deutschland "
-            "25 % zzgl. Solidaritätszuschlag, Sparer-Pauschbetrag/Freistellungsauftrag prüfen) – "
-            "allgemeine Information, keine Steuerberatung."
+            "Steuern (Deutschland, vereinfacht): Realisierte Gewinne unterliegen der "
+            "Abgeltungsteuer (25 % + Soli ≈ 26,4 %); bei Aktienfonds sind 30 % der Erträge "
+            "teilfreigestellt. Der Sparer-Pauschbetrag (1.000 € p. P. und Jahr, "
+            "Freistellungsauftrag stellen!) bleibt steuerfrei. Gewinne und Verluste desselben "
+            "Jahres werden automatisch verrechnet; nicht genutzte Verluste trägt der Broker "
+            "ins Folgejahr vor. Alles allgemeine Information, keine Steuerberatung."
+        )
+    # Steueroptimierung: Verlustpositionen identifizieren, deren Realisierung
+    # Gewinne aus den Verkäufen ausgleichen könnte (Verlustverrechnung).
+    verlust_texte = [
+        f"{p.name} ({p.wert_eur - e:+.0f} €)"
+        for p in positionen
+        if (e := p.einstandswert_eur) is not None and p.wert_eur < e
+    ]
+    if steuer_summe > 0 and verlust_texte:
+        hinweise.append(
+            "Steuer-Tipp (Verlustverrechnung): Folgende Positionen stehen im Minus und "
+            f"könnten Gewinne aus den Verkäufen steuerlich ausgleichen: {', '.join(verlust_texte)}. "
+            "Mit dem Nutzer besprechen, ob eine Realisierung fachlich sinnvoll ist – "
+            "Steuern allein sind kein Verkaufsgrund."
         )
     hinweise.extend(halten_hinweise)
     if sonstige:
@@ -162,6 +234,7 @@ def erstelle_umschichtungsplan(
         "kaeufe": kaeufe,
         "handelsvolumen_eur": handelsvolumen,
         "gebuehren_summe_eur": gebuehren_summe,
+        "geschaetzte_steuer_summe_eur": steuer_summe,
         "gebuehren_modell": f"{gebuehr_prozent} % pro Order, mindestens {gebuehr_min_eur} €",
         "nicht_zugeordnete_positionen": [p.model_dump() for p in sonstige],
         "hinweise": hinweise,

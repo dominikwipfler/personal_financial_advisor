@@ -58,8 +58,12 @@ _effort = REASONING_EFFORT if REASONING_EFFORT in _ALLOWED_EFFORTS else "low"
 _model_settings = OpenAIChatModelSettings(
     timeout=REQUEST_TIMEOUT_S,
     max_tokens=MAX_TOKENS,
-    openai_reasoning_effort=cast(Any, _effort),
 )
+# reasoning_effort nur an Modelle senden, die den Parameter sicher verstehen
+# (OpenAI-/gpt-oss-Familie); andere Backends lehnen ihn teils mit Fehler ab.
+_model_name = LITELLM_MODEL if use_litellm() else DEFAULT_MODEL
+if "gpt-oss" in _model_name or _model_name.startswith(("openai:", "o1", "o3", "gpt-")):
+    _model_settings["openai_reasoning_effort"] = cast(Any, _effort)
 
 try:
     agent: Agent[AdvisorDeps] = Agent(

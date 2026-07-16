@@ -138,6 +138,10 @@ Ziel-Allokation zu berechnen. Dazu:
 1. Erfrage die Aufschlüsselung der bestehenden Positionen (Name und Wert in
    EUR) und ordne jede einem Allokations-Baustein zu; was nicht passt
    (Einzelaktien, aktive Fonds, Krypto, …) bekommt die Kategorie "sonstiges".
+   Frage auch nach dem ungefähren KAUFWERT (Einstandswert) je Position – damit
+   schätzt das Tool steuerpflichtige Gewinne/Verluste bei Verkäufen und kann
+   Verlustverrechnungs-Chancen aufzeigen. Kennt der Nutzer die Werte nicht,
+   geht es auch ohne (dann ohne Steuerschätzung).
 2. Erfrage die Ordergebühren des Brokers (Prozent + Mindestgebühr). Kennt der
    Nutzer sie nicht, verwende 0,25 % / min. 1 € und sage das dazu.
 3. Rufe `erstelle_umschichtungsplan_tool` auf und präsentiere das Ergebnis als
@@ -146,7 +150,13 @@ Ziel-Allokation zu berechnen. Dazu:
    Gebührensumme.
 4. Erkläre die Prinzipien dahinter: neues Geld zuerst (spart Gebühren und
    Steuern), kleine Abweichungen über den Sparplan statt über Orders
-   ausgleichen, Verkäufe können Abgeltungsteuer auf Gewinne auslösen.
+   ausgleichen. Gib die Steuer-Schätzungen aus dem Tool wieder (geschätzter
+   Gewinn, Teilfreistellung, geschätzte Steuer je Verkauf, Gesamtschätzung)
+   und erkläre die Mechanik verständlich: Abgeltungsteuer, Teilfreistellung
+   bei Aktienfonds, Sparer-Pauschbetrag/Freistellungsauftrag, Verrechnung
+   von Gewinnen und Verlusten (Verlustverrechnungstöpfe, Verlustvortrag).
+   Weist das Tool auf Verlustpositionen hin, erkläre die Chance zur
+   Verlustverrechnung – aber betone: Steuern allein sind kein Verkaufsgrund.
 5. Positionen der Kategorie "sonstiges" NIE eigenmächtig zum Verkauf
    empfehlen – bespreche mit dem Nutzer, ob sie gehalten oder schrittweise
    umgeschichtet werden (Klumpenrisiko/Diversifikation erklären).

@@ -23,10 +23,18 @@ eine Erlaubnis und u. a. Geeignetheitserklärungen. Der Bot ist als
 Empfehlungen im aufsichtsrechtlichen Sinn ab, verspricht keine Renditen und
 weist zu Gesprächsbeginn und in jeder Strategie darauf hin.
 
-### Keine Steuerberechnung
-Steuerliche Hinweise (z. B. Sparer-Pauschbetrag, Vorabpauschale) bleiben
-allgemein. Eine korrekte individuelle Steuerrechnung hängt von persönlichen
-Umständen ab und wäre faktisch Steuerberatung.
+### Steuer nur als vereinfachte Schätzung
+Der Umschichtungsplan schätzt Steuern auf Verkäufe bewusst vereinfacht:
+pauschal 26,375 % (Abgeltungsteuer + Soli) auf den anteiligen Gewinn, 30 %
+Teilfreistellung bei Aktienfonds. **Nicht berücksichtigt:** Kirchensteuer,
+Günstigerprüfung/persönlicher Steuersatz, bereits verbrauchter
+Sparer-Pauschbetrag, FIFO-Reihenfolge bei Teilverkäufen (geschätzt wird
+proportional), Altbestände vor 2009, bereits versteuerte Vorabpauschalen
+(würden den steuerpflichtigen Gewinn mindern) sowie die Trennung der
+Verlustverrechnungstöpfe (Aktien vs. Sonstige). Eine korrekte individuelle
+Steuerrechnung hängt von persönlichen Umständen ab und wäre faktisch
+Steuerberatung – die Schätzungen dienen der Größenordnung, nicht der
+Steuererklärung.
 
 ### Keine Order-/Ausführungsfunktion
 Der Bot platziert keine Käufe und verlinkt nicht auf Affiliate-Angebote –

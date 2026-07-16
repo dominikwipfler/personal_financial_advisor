@@ -32,13 +32,17 @@ Prozent, Produktvorschlägen, Sparplan-Aufteilung und Begründung je Baustein.
   Nutzenoptimum `U = E(x) − a·Var(x)` mit horizont- und liquiditätsabhängigen
   Kappungen; daraus Asset-Allokation in Prozent, Sparplan-Aufteilung der
   Monatsrate (mit Mindestraten) und Aufteilung des Einmalbetrags.
-- **Umschichtungsplan mit Gebühren** – für Nutzer mit Bestandsdepot berechnet
-  der Bot konkrete Kauf- und Verkaufsempfehlungen vom Ist-Depot zur
-  Ziel-Allokation: „neues Geld zuerst" (minimiert Verkäufe, Gebühren und
-  Steuerrealisierung), Verkäufe nur oberhalb einer Abweichungsschwelle,
-  Ordergebühren (Prozent + Mindestgebühr) je Trade ausgewiesen,
-  Steuerhinweis bei realisierten Gewinnen; Fremdpositionen („sonstiges")
-  werden nie automatisch zum Verkauf gesetzt.
+- **Umschichtungsplan mit Gebühren und Steuerschätzung** – für Nutzer mit
+  Bestandsdepot berechnet der Bot konkrete Kauf- und Verkaufsempfehlungen vom
+  Ist-Depot zur Ziel-Allokation: „neues Geld zuerst" (minimiert Verkäufe,
+  Gebühren und Steuerrealisierung), Verkäufe nur oberhalb einer
+  Abweichungsschwelle, Ordergebühren (Prozent + Mindestgebühr) je Trade.
+  Mit bekannten Einstandswerten schätzt er je Verkauf den realisierten
+  Gewinn/Verlust und die Steuer (Abgeltungsteuer + Soli, 30 % Teilfreistellung
+  bei Aktienfonds), erklärt Sparer-Pauschbetrag und Verlustverrechnung
+  (Verrechnungstöpfe, Verlustvortrag) und zeigt Verlustpositionen als
+  Verrechnungs-Chance auf. Fremdpositionen („sonstiges") werden nie
+  automatisch zum Verkauf gesetzt.
 - **Verständliche Erklärungen** – Diversifikation, Risiko/Rendite, Zeithorizont
   und Rebalancing werden begründet und auf Deutsch erklärt.
 - **Disclaimer eingebaut** – zu Gesprächsbeginn und am Ende jeder Strategie.
@@ -162,13 +166,21 @@ Projekt direkt unterstützt:
    Alle vom Key erlaubten Modelle erscheinen zusätzlich automatisch im
    Modell-Selector der Chat-UI.
 
-**Modell-Empfehlung für dieses Projekt:** Der Berater braucht zuverlässiges
-mehrstufiges Tool-Calling (14+ Profil-Speicherungen, Recherche-Ketten) und
-gutes Deutsch. In dieser Reihenfolge wählen, je nachdem was der Server
-anbietet: `gpt-4o` bzw. `gpt-4.1` oder ein `claude-sonnet-*` (beste
-Dialog-/Tool-Qualität) → `gpt-4o-mini` / `gpt-4.1-mini` (günstiger, für Tests
-ausreichend, überspringt aber eher mal Phasen). Kleine lokale Modelle
-(z. B. 7B-Klasse) sind für die Tool-Ketten nicht zuverlässig genug.
+**Modell-Empfehlung für dieses Projekt** (Benchmark vom 16.07.2026 mit dem
+realen Berater-Workload – Extraktion von 13 Angaben aus einer langen Nachricht
+und Umschichtungs-Tool mit verschachtelter Positionsliste):
+
+| Modell | Extraktion | Verschachtelte Tool-Argumente | Tempo |
+|---|---|---|---|
+| `gemini-3-flash-preview` ⭐ | 12/13 | fehlerfrei inkl. Einstandswerten (2/2 Läufe) | schnell |
+| `minimax-m3` | 13/13 | verliert optionale Felder (Einstandswert) | langsam |
+| `gpt-oss-120b` | 13/13 (mit Varianz) | verliert optionale Felder; gelegentlich abgeschnittenes Tool-JSON | schnell |
+| `glm-4.7-flash` | 12/13 | nicht getestet | sehr schnell |
+
+Empfehlung: **`gemini-3-flash-preview`** als Standard (`LITELLM_MODEL`); der
+Benchmark liegt als Vorgehen dokumentiert vor und sollte bei neuen Modellen
+auf dem Server wiederholt werden. Kleine Modelle (7B-Klasse) sind für die
+Tool-Ketten nicht zuverlässig genug.
 
 ### Modell/Provider wechseln
 
