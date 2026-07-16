@@ -1,11 +1,12 @@
-"""Web-App: offizielle Pydantic AI Chat UI über `agent.to_web()`.
+"""Web-App: offizielle Pydantic AI Chat UI mit Profil pro Konversation.
 
 Start:  uv run uvicorn advisor.app:app --reload
 Danach: http://localhost:8000
 
-Muster aus dem chatbot-pydanticai-template übernommen (inkl. optionaler
-Modellliste vom LiteLLM-Server). Das AdvisorDeps-Objekt hält das Nutzerprofil
-als Session-State über alle Requests des Serverprozesses hinweg.
+Für weitere Nutzer im selben Netzwerk (z. B. zweite Person am Laptop):
+        uv run uvicorn advisor.app:app --host 0.0.0.0
+Dann ist der Bot unter http://<IP-dieses-Rechners>:8000 erreichbar;
+jeder Chat hat sein eigenes Profil (siehe advisor/webapp.py).
 """
 
 from __future__ import annotations
@@ -18,7 +19,7 @@ from advisor.config import (
     get_litellm_supported_models,
     use_litellm,
 )
-from advisor.profile import AdvisorDeps
+from advisor.webapp import create_app
 
 if use_litellm():
     from pydantic_ai.models.openai import OpenAIChatModel
@@ -36,10 +37,4 @@ if use_litellm():
 else:
     _web_models = {DEFAULT_MODEL.split(":", 1)[-1]: DEFAULT_MODEL}
 
-# Session-State: ein Profil pro Serverprozess (lokale Einzelnutzer-App).
-deps = AdvisorDeps()
-
-app = agent.to_web(
-    models=_web_models,
-    deps=deps,
-)
+app = create_app(agent, models=_web_models)

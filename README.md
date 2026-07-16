@@ -22,9 +22,11 @@ Prozent, Produktvorschlägen, Sparplan-Aufteilung und Begründung je Baustein.
   maximal tragbare zwischenzeitliche Verlusthöhe ab. Risikobereitschaft
   (subjektiv) und Risikotragfähigkeit (objektiv) werden getrennt bewertet;
   die schwächere Dimension begrenzt (Vorsichtsprinzip).
-- **Session-State** – das Profil wird serverseitig gespeichert; bereits
-  beantwortete Fragen werden nicht erneut gestellt, und der Bot baut im
-  weiteren Gespräch darauf auf.
+- **Session-State pro Konversation** – jedes Gespräch (Chat in der UI) hat
+  sein eigenes serverseitiges Profil: bereits beantwortete Fragen werden nicht
+  erneut gestellt, ein neuer Chat startet mit leerem Profil, und mehrere
+  Personen können den Server gleichzeitig nutzen, ohne sich die Profile zu
+  teilen.
 - **Aktuelle Web-Recherche mit Marktlage-Check und Emittenten-Prüfung** –
   Websuche und Nachrichten-Suche (DuckDuckGo/Bing/Brave, ohne API-Key,
   mit Datum und Quelle), Seiten-Abruf und Marktdaten von Yahoo Finance.
@@ -117,7 +119,8 @@ aus dem Finanzmanagement-Skript, Kap. 1&2):
 | `src/advisor/rebalancing.py` | Umschichtungsplan: Ist-Depot → Ziel-Allokation mit Ordergebühren, Handels-Schwellen und „neues Geld zuerst"-Prinzip |
 | `src/advisor/research.py` | Websuche + Nachrichten-Suche (ddgs, mit Backend-Fallback), Seitenabruf (httpx + BeautifulSoup), Marktdaten (yfinance) |
 | `src/advisor/agent.py` | Agent-Verdrahtung: Modell, Instructions, Tool-Registrierung (dünne Adapter um die Fachmodule) |
-| `src/advisor/app.py` | Starlette-App via `agent.to_web()` – serviert Chat-UI und Streaming-API |
+| `src/advisor/webapp.py` | Web-App-Schicht mit Profil **pro Konversation** (SessionStore, Chat-ID → eigenes `AdvisorDeps`); bildet die `to_web()`-Endpunkte über den `VercelAIAdapter` nach |
+| `src/advisor/app.py` | Einstiegspunkt: verdrahtet Agent, Modell-Liste (LiteLLM) und `webapp.create_app()` |
 
 **Designprinzip:** Das Zahlenwerk (Risikoklasse, Allokation, Sparplan) wird
 **deterministisch in Python** berechnet – das LLM interpretiert, erklärt und
@@ -196,6 +199,27 @@ Tool-Ketten nicht zuverlässig genug.
 - Alternativ **LiteLLM-Proxy**: `USE_LITELLM=1`, `LITELLM_SERVER_URL`,
   `LITELLM_API_KEY`, `LITELLM_MODEL` – identisch zum Template; die vom Proxy
   unterstützten Modelle erscheinen im Modell-Selector der UI.
+
+### Mehrere Nutzer / Zugriff im Netzwerk
+
+Jeder Chat hat sein eigenes Profil – eine zweite Person braucht das Projekt
+also **nicht** zu klonen. Den Server im Heimnetz freigeben:
+
+```bash
+uv run uvicorn advisor.app:app --host 0.0.0.0
+```
+
+Die andere Person öffnet dann im Browser `http://<IP-dieses-Rechners>:8000`
+(IP z. B. via `ipconfig`; ggf. Windows-Firewall-Freigabe für Port 8000
+bestätigen) und beginnt einfach einen Chat – sie bekommt automatisch ein
+eigenes, leeres Profil. Für Zugriff außerhalb des Heimnetzes eignet sich ein
+Tunnel (z. B. `cloudflared tunnel --url http://localhost:8000`).
+
+**Hinweise:** Es gibt keine Anmeldung – jeder mit der URL kann den Bot (und
+damit den hinterlegten LLM-Key) nutzen; nur im privaten Netz bzw. mit
+vertrauenswürdigen Personen teilen. Profile leben im Arbeitsspeicher: ein
+Server-Neustart leert sie, und wer einen Chat löscht, verliert das zugehörige
+Profil.
 
 ### Nutzung
 

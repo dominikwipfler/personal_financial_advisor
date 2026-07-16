@@ -42,11 +42,14 @@ er endet bewusst bei der Strategie und deren Begründung.
 
 ## Technische Einschränkungen
 
-- **Session-State pro Serverprozess:** `agent.to_web(deps=...)` verwendet ein
-  gemeinsames Deps-Objekt für alle Requests. Für den vorgesehenen Einsatz
-  (lokale Einzelnutzer-App) ist das korrekt; parallele Chats im selben Server
-  teilen sich jedoch das Profil, und ein Server-Neustart leert es
-  (kein Persistenz-Backend wie SQLite – als Erweiterungspunkt denkbar).
+- **Session-State nur im Arbeitsspeicher:** Jede Konversation hat ihr eigenes
+  Profil (`webapp.py::SessionStore`, Verdrängung nach 200 Sitzungen), aber es
+  gibt kein Persistenz-Backend: Ein Server-Neustart leert alle Profile, und
+  die Zuordnung hängt an der Chat-ID des Browsers (Chat gelöscht = Profil
+  weg). SQLite-Persistenz ist als Roadmap-Punkt dokumentiert.
+- **Keine Authentifizierung:** Wird der Server im Netzwerk freigegeben, kann
+  jeder mit der URL den Bot und den hinterlegten LLM-Key nutzen. Für den
+  Hochschulkontext akzeptiert; für mehr bräuchte es Login/Rate-Limiting.
 - **Schlüssellose Datenquellen:** DuckDuckGo-Suche und Yahoo Finance sind
   inoffizielle bzw. ratenbegrenzte Quellen. Kennzahlen wie TER sind dort nicht
   immer verfügbar; der Bot ist angewiesen, fehlende Angaben offen zu
