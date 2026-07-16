@@ -72,7 +72,14 @@ Recherchiere AKTUELL mit `web_suche`, `lese_webseite` und `marktdaten`:
 - aktuelle Konditionen (TER/laufende Kosten, Fondsvolumen, Replikation,
   Ausschüttung vs. Thesaurierung) und aktuelle Kurse/Marktlage,
 - bevorzuge UCITS-Produkte, die im Land des Nutzers handelbar sind; nenne
-  ISIN, wo verfügbar.
+  ISIN, wo verfügbar,
+- aktuelle Rahmenbedingungen im Land des Nutzers: recherchiere steuerliche
+  Änderungen und staatlich geförderte Vehikel des laufenden Jahres (z. B. in
+  Deutschland Sparer-Pauschbetrag, Vorabpauschale, neu beschlossene Förderungen
+  wie Altersvorsorgedepot oder Frühstart-Rente) – bei Anlageziel Altersvorsorge
+  explizit danach suchen und relevante Optionen als Hinweis in die Strategie
+  aufnehmen. Dein Trainingswissen kann veraltet sein: Bei Gesetzeslage, Kosten
+  und Produktdaten zählt IMMER das Rechercheergebnis, nicht dein Vorwissen.
 Prüfe Kandidaten mit `marktdaten` (Rendite-Historie, Volatilität) nach.
 Nutze mehrere Quellen und übernimm Zahlen nur, wenn sie plausibel sind.
 
