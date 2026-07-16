@@ -32,6 +32,13 @@ Prozent, Produktvorschlägen, Sparplan-Aufteilung und Begründung je Baustein.
   Nutzenoptimum `U = E(x) − a·Var(x)` mit horizont- und liquiditätsabhängigen
   Kappungen; daraus Asset-Allokation in Prozent, Sparplan-Aufteilung der
   Monatsrate (mit Mindestraten) und Aufteilung des Einmalbetrags.
+- **Umschichtungsplan mit Gebühren** – für Nutzer mit Bestandsdepot berechnet
+  der Bot konkrete Kauf- und Verkaufsempfehlungen vom Ist-Depot zur
+  Ziel-Allokation: „neues Geld zuerst" (minimiert Verkäufe, Gebühren und
+  Steuerrealisierung), Verkäufe nur oberhalb einer Abweichungsschwelle,
+  Ordergebühren (Prozent + Mindestgebühr) je Trade ausgewiesen,
+  Steuerhinweis bei realisierten Gewinnen; Fremdpositionen („sonstiges")
+  werden nie automatisch zum Verkauf gesetzt.
 - **Verständliche Erklärungen** – Diversifikation, Risiko/Rendite, Zeithorizont
   und Rebalancing werden begründet und auf Deutsch erklärt.
 - **Disclaimer eingebaut** – zu Gesprächsbeginn und am Ende jeder Strategie.
@@ -97,6 +104,7 @@ aus dem Finanzmanagement-Skript, Kap. 1&2):
 | `src/advisor/profile.py` | `UserProfile` (Pydantic) + `AdvisorDeps` (Session-State) |
 | `src/advisor/risk.py` | Risikoprofilierung: Scores, Risikoklasse 1–5, Risikoaversionsparameter `a`, nutzenoptimale Aktienquote mit Kappungen |
 | `src/advisor/strategy.py` | Strategische + taktische Asset-Allokation, Sparplan- und Einmalbetrags-Aufteilung, Hinweise (Notgroschen, Tilgung, Rebalancing) |
+| `src/advisor/rebalancing.py` | Umschichtungsplan: Ist-Depot → Ziel-Allokation mit Ordergebühren, Handels-Schwellen und „neues Geld zuerst"-Prinzip |
 | `src/advisor/research.py` | Websuche (ddgs), Seitenabruf (httpx + BeautifulSoup), Marktdaten (yfinance) |
 | `src/advisor/agent.py` | Agent-Verdrahtung: Modell, Instructions, Tool-Registrierung (dünne Adapter um die Fachmodule) |
 | `src/advisor/app.py` | Starlette-App via `agent.to_web()` – serviert Chat-UI und Streaming-API |

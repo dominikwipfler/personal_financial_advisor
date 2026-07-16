@@ -28,6 +28,7 @@ from advisor.config import (
 )
 from advisor.profile import AdvisorDeps, UserProfile
 from advisor.prompts import SYSTEM_PROMPT
+from advisor.rebalancing import Position, erstelle_umschichtungsplan
 from advisor.risk import ermittle_risikoprofil
 from advisor.strategy import erstelle_strategie
 
@@ -224,6 +225,42 @@ def erstelle_strategie_tool(ctx: RunContext[AdvisorDeps]) -> str:
     risiko = ermittle_risikoprofil(p)
     strategie = erstelle_strategie(p, risiko)
     return json.dumps(strategie, ensure_ascii=False, indent=1)
+
+
+@agent.tool
+def erstelle_umschichtungsplan_tool(
+    ctx: RunContext[AdvisorDeps],
+    positionen: list[Position],
+    gebuehr_prozent: float = 0.25,
+    gebuehr_min_eur: float = 1.0,
+) -> str:
+    """Konkrete Kauf-/Verkaufsliste vom Ist-Depot zur Ziel-Allokation, mit Gebühren.
+
+    Vorher mit dem Nutzer klären: (1) Aufschlüsselung der bestehenden Positionen
+    (Name, Wert in EUR, Zuordnung zu einem Allokations-Baustein oder 'sonstiges'),
+    (2) Ordergebühren des Brokers. Sind die Gebühren unbekannt, Standardwerte
+    verwenden und das dem Nutzer sagen.
+
+    Args:
+        positionen: Bestehende Positionen mit Name, Wert und Kategorie.
+        gebuehr_prozent: Ordergebühr in Prozent des Ordervolumens (z. B. 0.25).
+        gebuehr_min_eur: Mindestgebühr pro Order in EUR (z. B. 1.0).
+    """
+    p = ctx.deps.profile
+    offen = p.fehlende_angaben()
+    if offen:
+        return f"Profil noch unvollständig, bitte zuerst erfragen: {', '.join(offen)}"
+
+    risiko = ermittle_risikoprofil(p)
+    strategie = erstelle_strategie(p, risiko)
+    plan = erstelle_umschichtungsplan(
+        positionen=positionen,
+        ziel_allokation_prozent=strategie["allokation_prozent"],
+        neues_kapital_eur=p.einmalbetrag_eur or 0.0,
+        gebuehr_prozent=gebuehr_prozent,
+        gebuehr_min_eur=gebuehr_min_eur,
+    )
+    return json.dumps(plan, ensure_ascii=False, indent=1)
 
 
 # ----------------------------- Recherche-Tools -----------------------------
