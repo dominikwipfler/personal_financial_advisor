@@ -25,9 +25,15 @@ Prozent, Produktvorschlägen, Sparplan-Aufteilung und Begründung je Baustein.
 - **Session-State** – das Profil wird serverseitig gespeichert; bereits
   beantwortete Fragen werden nicht erneut gestellt, und der Bot baut im
   weiteren Gespräch darauf auf.
-- **Aktuelle Web-Recherche** – Websuche (DuckDuckGo, ohne API-Key),
-  Seiten-Abruf und Marktdaten von Yahoo Finance (Kurse, Rendite-Historie,
-  Volatilität, Kosten) zur Auswahl kostengünstiger, breit gestreuter Produkte.
+- **Aktuelle Web-Recherche mit Marktlage-Check und Emittenten-Prüfung** –
+  Websuche und Nachrichten-Suche (DuckDuckGo/Bing/Brave, ohne API-Key,
+  mit Datum und Quelle), Seiten-Abruf und Marktdaten von Yahoo Finance.
+  Vor jeder Strategie verschafft sich der Bot ein aktuelles Bild der
+  Marktlage (Zinsen, Inflation, geopolitische Risiken – ohne Market-Timing)
+  und prüft jedes empfohlene Produkt: Fondsvolumen, Replikation, bei
+  Anleihen die Emittenten (Staaten/Unternehmen, Bonität, aktuelle
+  Warnsignale), bei Einzeltiteln das konkrete Unternehmen bzw. den Staat
+  inklusive aktueller Nachrichtenlage.
 - **Quantitative Strategie-Engine** – Aktienquote als Bernoulli-/Markowitz-
   Nutzenoptimum `U = E(x) − a·Var(x)` mit horizont- und liquiditätsabhängigen
   Kappungen; daraus Asset-Allokation in Prozent, Sparplan-Aufteilung der
@@ -109,7 +115,7 @@ aus dem Finanzmanagement-Skript, Kap. 1&2):
 | `src/advisor/risk.py` | Risikoprofilierung: Scores, Risikoklasse 1–5, Risikoaversionsparameter `a`, nutzenoptimale Aktienquote mit Kappungen |
 | `src/advisor/strategy.py` | Strategische + taktische Asset-Allokation, Sparplan- und Einmalbetrags-Aufteilung, Hinweise (Notgroschen, Tilgung, Rebalancing) |
 | `src/advisor/rebalancing.py` | Umschichtungsplan: Ist-Depot → Ziel-Allokation mit Ordergebühren, Handels-Schwellen und „neues Geld zuerst"-Prinzip |
-| `src/advisor/research.py` | Websuche (ddgs), Seitenabruf (httpx + BeautifulSoup), Marktdaten (yfinance) |
+| `src/advisor/research.py` | Websuche + Nachrichten-Suche (ddgs, mit Backend-Fallback), Seitenabruf (httpx + BeautifulSoup), Marktdaten (yfinance) |
 | `src/advisor/agent.py` | Agent-Verdrahtung: Modell, Instructions, Tool-Registrierung (dünne Adapter um die Fachmodule) |
 | `src/advisor/app.py` | Starlette-App via `agent.to_web()` – serviert Chat-UI und Streaming-API |
 
@@ -273,6 +279,29 @@ Konfigurations-/Key-Management-Pattern (inkl. optionalem LiteLLM-Betrieb).
   Langfristwerte (Aktien 7 % p. a. / σ 16 %, Anleihen 2,5 % p. a. / σ 5 %,
   ρ = 0,2), im Code dokumentiert und leicht änderbar; siehe auch
   [LIMITATIONS.md](LIMITATIONS.md).
+
+## Verbesserungsvorschläge / Roadmap
+
+Sinnvolle Erweiterungen, grob nach Nutzen sortiert (bewusst noch nicht
+umgesetzt, um den Kern schlank und geprüft zu halten):
+
+1. **Persistentes Profil (SQLite):** Das Profil überlebt aktuell keinen
+   Server-Neustart. Ein Speicher-Backend hinter `AdvisorDeps` wäre der größte
+   Alltagsgewinn und passt in das bestehende Design.
+2. **Zielprojektion/Monte-Carlo-Simulation:** „Reichen 350 €/Monat für Betrag X
+   mit 67?" – deterministische Simulation der Sparziele mit Unsicherheitsband
+   würde die Strategie greifbarer machen.
+3. **Strategie-Export:** Ausgabe der fertigen Strategie als Markdown-/PDF-Datei
+   zum Abheften bzw. für die Abgabe.
+4. **Jährlicher Check-up-Modus:** Profil laden, aktuelle Depotwerte abfragen,
+   Rebalancing-Vorschlag – die Bausteine (Profil + Umschichtungs-Engine)
+   existieren bereits.
+5. **Bessere Produktdatenquellen:** justETF/extraETF liefern TER, Volumen und
+   Replikation strukturierter als Yahoo Finance – ein dediziertes
+   ETF-Daten-Tool würde die Produktvorschläge robuster machen.
+6. **Feinere Steuerschätzung:** Trennung der Verlustverrechnungstöpfe
+   (Aktien vs. Sonstige), FIFO bei Teilverkäufen, Anrechnung versteuerter
+   Vorabpauschalen.
 
 ## Nicht umgesetzt / Einschränkungen
 

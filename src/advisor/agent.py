@@ -282,6 +282,21 @@ def web_suche(suchbegriff: str, max_treffer: int = 8) -> str:
 
 
 @agent.tool_plain
+def nachrichten_suche(suchbegriff: str, max_treffer: int = 8) -> str:
+    """Aktuelle Nachrichten (mit Datum/Quelle) zu Markt, Politik oder einem Emittenten.
+
+    Für zeitkritische Themen der normalen Websuche vorziehen: Marktlage,
+    Zinsentscheide, geopolitische Ereignisse, News zu einem Staat (Anleihen)
+    oder Unternehmen (Aktien), bevor es empfohlen wird.
+
+    Args:
+        suchbegriff: z. B. "EZB Leitzins Entscheidung", "Rating Frankreich Staatsanleihen".
+        max_treffer: Anzahl der Meldungen (Standard 8).
+    """
+    return research.nachrichten_suche(suchbegriff, max_treffer)
+
+
+@agent.tool_plain
 def lese_webseite(url: str) -> str:
     """Ruft eine Webseite ab und liefert deren Textinhalt (gekürzt).
 

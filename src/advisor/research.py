@@ -51,6 +51,46 @@ def web_suche(suchbegriff: str, max_treffer: int = 8) -> str:
     return "\n".join(zeilen)
 
 
+def nachrichten_suche(suchbegriff: str, max_treffer: int = 8) -> str:
+    """DuckDuckGo-NACHRICHTEN-Suche: aktuelle Meldungen mit Datum und Quelle.
+
+    Für zeitkritische Themen (Marktlage, Zinsentscheide, politische Ereignisse,
+    Nachrichten zu einem Emittenten) der Textsuche vorzuziehen.
+    """
+    from ddgs import DDGS
+
+    # Backend-Fallback: der Standard (auto/Yahoo) ist in manchen Netzen
+    # blockiert; Bing und Brave liefern zuverlässig.
+    treffer: list[dict[str, Any]] = []
+    letzter_fehler = ""
+    for backend in ("bing", "brave", "auto"):
+        try:
+            treffer = list(
+                DDGS(timeout=15).news(
+                    suchbegriff, region="de-de", max_results=max_treffer, backend=backend
+                )
+            )
+            if treffer:
+                break
+        except Exception as e:  # noqa: BLE001
+            letzter_fehler = str(e)
+
+    if not treffer:
+        if letzter_fehler:
+            return f"Nachrichten-Suche fehlgeschlagen: {letzter_fehler}"
+        return "Keine aktuellen Meldungen gefunden. Bitte Suchbegriff variieren."
+
+    zeilen = []
+    for t in treffer:
+        titel = t.get("title", "")
+        datum = t.get("date", "")
+        quelle = t.get("source", "")
+        url = t.get("url", "")
+        snippet = (t.get("body", "") or "")[:250]
+        zeilen.append(f"- [{datum}] {titel} ({quelle})\n  URL: {url}\n  {snippet}")
+    return "\n".join(zeilen)
+
+
 def lese_webseite(url: str) -> str:
     """Webseite abrufen und als reinen Text (gekürzt) zurückgeben."""
     try:
