@@ -181,10 +181,13 @@ berechnet. „Fang bitte von vorn an“ setzt das Profil zurück.
 Tipp: Die Tool-Aufrufe (Profil speichern, Recherche, Strategie-Berechnung)
 sind in der Chat-UI einsehbar – nützlich zum Nachvollziehen der Beratung.
 
-## Fachliche Grundlagen aus den Unterlagen (`docs/`)
+## Fachliche Grundlagen aus den Vorlesungsunterlagen
 
 Die Beratungslogik setzt Prinzipien aus dem Finanzmanagement-Skript von
-Prof. Dr. Andrea Wirth (HKA) um. Herkunft je Prinzip:
+Prof. Dr. Andrea Wirth (HKA) um. Die Skript-PDFs liegen aus
+**Urheberrechtsgründen nicht im Repository** – sie wurden einmalig
+ausgewertet; die Prinzipien sind fest in Code und System-Prompt eingebaut
+(der Bot liest die PDFs zur Laufzeit nicht). Herkunft je Prinzip:
 
 | Prinzip | Quelle (Dokument) | Umsetzung im Code |
 |---|---|---|
@@ -259,5 +262,5 @@ Serverprozess, Grenzen der schlüssellosen Datenquellen.
 
 ## Lizenz / Kontext
 
-Hochschulprojekt (HKA). Fachliche Unterlagen in `docs/` © Prof. Dr. Andrea
-Wirth, nur für Studienzwecke.
+Hochschulprojekt (HKA). Die referenzierten Vorlesungsunterlagen
+(© Prof. Dr. Andrea Wirth) sind nicht Teil des Repositories.
