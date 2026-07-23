@@ -11,6 +11,17 @@ Prozent, Produktvorschlägen, Sparplan-Aufteilung und Begründung je Baustein.
 > sind allgemeine Informationen zur eigenen Entscheidungsfindung, ohne
 > Garantien oder Renditeversprechen. Kapitalanlagen können zu Verlusten führen.
 
+**Inhalt:** [Features](#features) · [Architektur](#architektur) ·
+[Fachlogik im Detail](#fachlogik-im-detail) · [Setup](#setup) ·
+[Konfiguration](#konfiguration-umgebungsvariablen) ·
+[API-Endpunkte](#api-endpunkte) · [Tests](#tests-und-qualitätssicherung) ·
+[HKA-LLM-Server](#nutzung-mit-dem-hka-llm-server-empfohlen) ·
+[Mehrere Nutzer](#mehrere-nutzer--zugriff-im-netzwerk) ·
+[Troubleshooting](#troubleshooting-bei-modellfehlern) ·
+[Fachliche Grundlagen](#fachliche-grundlagen-aus-den-vorlesungsunterlagen) ·
+[Entscheidungen](#entscheidungen) · [Roadmap](#verbesserungsvorschläge--roadmap) ·
+[Einschränkungen](#nicht-umgesetzt--einschränkungen)
+
 ## Features
 
 - **Nutzer-Profiling per Dialog** – der Bot fragt Schritt für Schritt (nicht
@@ -146,6 +157,142 @@ aus dem Finanzmanagement-Skript, Kap. 1&2):
 recherchiert, erfindet aber keine Prozentsätze. Konkrete Produktvorschläge
 (Stufe „Titelauswahl“) kommen ausschließlich aus der aktuellen Web-Recherche.
 
+## Fachlogik im Detail
+
+Dieser Abschnitt dokumentiert die tatsächlich implementierten Regeln, damit
+jede Zahl im Beratungsergebnis nachvollziehbar ist. Alle Werte stehen als
+Konstanten im jeweiligen Modul und sind ohne Codeumbau änderbar.
+
+### Das erhobene Profil
+
+13 Pflichtangaben steuern die Dialogführung und die Fortschrittsanzeige
+(`profile.py::PFLICHTANGABEN`), in dieser Reihenfolge: Anlageziel,
+Zeithorizont, Alter, Land/Steuerkontext, Anlageerfahrung, vorhandene Anlagen,
+Depot vorhanden, monatliche Sparrate, Einmalbetrag, Schulden, Notgroschen
+(in Monatsausgaben), Reaktion auf 20 % Kursverlust, maximal tragbarer
+Zwischenverlust. Hinzu kommen zwei nicht direkt erfragte Felder:
+`hat_konsumschulden` (wird aus dem Schulden-Freitext abgeleitet, s. u.) und
+`risikoklasse` (Ergebnis der Berechnung).
+
+### Schritt 1: Risiko-Scores (`risk.py`)
+
+**Risikobereitschaft** (subjektiv, 0–10 Punkte):
+
+| Kriterium | Punkte |
+|---|---|
+| Reaktion auf 20 % Verlust | alles verkaufen 0 · teilweise verkaufen 1 · beunruhigt halten 2 · gelassen halten 4 · nachkaufen 5 |
+| Maximal tragbarer Zwischenverlust | ≥ 40 % → 3 · ≥ 25 % → 2 · ≥ 15 % → 1 · sonst 0 |
+| Anlageerfahrung | keine 0 · Grundkenntnisse 1 · fortgeschritten 2 · sehr erfahren 2 |
+
+**Risikotragfähigkeit** (objektiv, 0–10 Punkte):
+
+| Kriterium | Punkte |
+|---|---|
+| Zeithorizont | ≥ 15 J. → 4 · ≥ 10 J. → 3 · ≥ 5 J. → 2 · ≥ 3 J. → 1 |
+| Notgroschen | ≥ 6 Monatsausgaben → 3 · ≥ 3 → 2 · ≥ 1 → 1 |
+| Keine Konsumschulden | 2 |
+| Alter unter 40 | 1 |
+
+Beide Scores werden in Teilklassen übersetzt (0–1 → 1, 2–3 → 2, 4–6 → 3,
+7–8 → 4, ab 9 → 5). Die **Risikoklasse ist das Minimum beider Teilklassen** –
+die schwächere Dimension begrenzt (Vorsichtsprinzip).
+
+### Schritt 2: Aktienquote als Nutzenoptimum (`risk.py`)
+
+Je Risikoklasse ist ein Risikoaversionsparameter `a` der Nutzenfunktion
+`U = E(x) − a·Var(x)` hinterlegt. Daraus folgt die nutzenoptimale Aktienquote
+im Zwei-Anlagen-Fall (Aktien vs. Anleihen, mit Korrelation) nach der Formel aus
+Kap. 3 des Skripts – kalibriert auf übliche Musterportfolios:
+
+| Risikoklasse | Bezeichnung | `a` | Aktienquote vor Kappungen |
+|---|---|---|---|
+| 1 | sehr defensiv | 7,0 | ca. 17 % |
+| 2 | defensiv | 4,0 | ca. 26 % |
+| 3 | ausgewogen | 1,9 | ca. 51 % |
+| 4 | wachstumsorientiert | 1,4 | ca. 68 % |
+| 5 | offensiv | 0,9 | 100 % |
+
+Zugrunde liegende Kapitalmarktannahmen: Aktien 7 % p. a. bei σ 16 %, Anleihen
+2,5 % p. a. bei σ 5 %, Korrelation 0,2.
+
+**Kappungen** danach (jede greift unabhängig, es zählt die niedrigste Quote):
+Zeithorizont unter 3 Jahren → höchstens 10 %, unter 5 Jahren → 30 %, unter
+10 Jahren → 70 %; Notgroschen unter 3 Monatsausgaben → 50 %; bestehende
+Konsumschulden → 30 %. Jede angewandte Kappung wird mit Begründung
+ausgegeben und vom Bot erklärt.
+
+### Schritt 3: Asset-Allokation (`strategy.py`)
+
+Aus der Aktienquote entsteht die Aufteilung über die Bausteine:
+
+- **Aktien** werden 70/30 auf Industrie- und Schwellenländer verteilt
+  (taktische Regionen-Diversifikation).
+- **Gold** kommt mit 5 % dazu, wenn Risikoklasse ≥ 3 und Aktienquote ≥ 40 % –
+  begrenzt auf den neben der Aktienquote verbleibenden Platz, damit nie
+  negative Anteile entstehen.
+- Der **defensive Rest** teilt sich horizontabhängig in Geldmarkt/Tagesgeld
+  und Anleihen: bei unter 3 Jahren 80 % Geldmarkt, unter 5 Jahren 50 %, unter
+  10 Jahren 25 %, darüber 10 %.
+- Bausteine mit Anteil 0 werden nicht ausgewiesen; Rundungsdifferenzen gehen
+  auf den größten Baustein.
+
+**Sparplan:** Die Monatsrate wird nach denselben Quoten verteilt. Positionen
+unter 25 € Mindestrate werden dem größten Baustein zugeschlagen, damit der Plan
+bei einem realen Broker umsetzbar bleibt. Ist die Rate insgesamt sehr klein,
+fließt alles in einen einzigen breiten Baustein.
+
+**Hinweise**, die die Strategie automatisch mitgibt: Notgroschen zuerst
+aufbauen (unter 3 Monatsausgaben), Konsumschulden zuerst tilgen, bei einem
+Einmalbetrag ab 10.000 € die Abwägung Sofortanlage vs. gestaffelter Einstieg,
+und in jedem Fall der Hinweis auf jährliches Rebalancing.
+
+### Schritt 4: Umschichtung mit Gebühren und Steuern (`rebalancing.py`)
+
+Für Bestandsdepots wird der Weg zur Ziel-Allokation berechnet:
+
+- **Neues Geld zuerst:** Der Einmalbetrag füllt Untergewichte, bevor verkauft
+  wird – das minimiert Gebühren und Steuerrealisierung.
+- **Verkauft wird nur**, wenn ein Baustein um mindestens 5 Prozentpunkte
+  übergewichtet ist *und* der Betrag mindestens 200 € erreicht; kleinere
+  Abweichungen werden über künftige Sparraten ausgeglichen.
+- **Gebühren:** je Order Prozentsatz plus Mindestgebühr, standardmäßig 0,25 % /
+  1 € – im Dialog durch die realen Broker-Konditionen ersetzbar.
+- **Steuern** (nur bei bekanntem Einstandswert): anteiliger Gewinn je Verkauf,
+  darauf 26,375 % (Abgeltungsteuer plus Solidaritätszuschlag), bei Aktienfonds
+  abzüglich 30 % Teilfreistellung. Realisierte Verluste werden als
+  Verrechnungstopf ausgewiesen, und Verlustpositionen im Depot werden als
+  Chance zur Verrechnung mit den anfallenden Gewinnen benannt – mit dem
+  ausdrücklichen Hinweis, dass Steuern allein kein Verkaufsgrund sind.
+- **Fremdpositionen** der Kategorie „sonstiges" (Einzelaktien, aktive Fonds,
+  Krypto) werden nie automatisch zum Verkauf gesetzt, sondern zur Besprechung
+  markiert.
+
+### Robustheit gegenüber dem Sprachmodell
+
+Damit die Beratung nicht davon abhängt, wie sorgfältig ein Modell arbeitet:
+
+- **Ableitung statt Vertrauen:** `hat_konsumschulden` steuert eine harte
+  Kappung, wird aber nicht separat abgefragt – ein Validator leitet es aus dem
+  Schulden-Freitext ab („Ratenkredit", „Dispo" → ja; „keine" → nein).
+  Immobilienkredite zählen bewusst nicht als Konsumschulden.
+- **Tolerante Eingaben:** Freie Formulierungen werden vor der Validierung
+  normalisiert („Anfänger/Grundkenntnisse" → `grundkenntnisse`, „würde
+  abwarten" → `gelassen_halten`, „ja"/„nein" → Boolean), statt einen
+  Validierungsfehler in die UI durchschlagen zu lassen.
+- **Sammel-Tool:** Mehrere Angaben aus einer Nachricht werden in *einem*
+  Tool-Aufruf gespeichert; viele parallele Einzelaufrufe führten bei
+  schwächeren Modellen zu verlorenen Angaben.
+- **Verweigerung statt Raten:** Risiko- und Strategie-Tools liefern nichts,
+  solange Pflichtangaben fehlen, und nennen die offenen Punkte.
+- **Wiederholungen und Grenzen:** bis zu drei Korrekturversuche bei
+  ungültigen Tool-Argumenten, bis zu vier Anläufe (0,5 s / 1,5 s / 3 s Pause)
+  bei wiederholbaren Provider-Fehlern, 120 s Timeout und 6.000 Token je
+  Anfrage.
+- **Sitzungsverwaltung:** bis zu 200 Konversationen im Arbeitsspeicher
+  (älteste werden verdrängt und bei Bedarf aus SQLite nachgeladen);
+  beschädigte Datensätze starten mit leerem Profil, statt die App zu
+  blockieren.
+
 ## Setup
 
 Voraussetzungen: Python ≥ 3.10, [uv](https://docs.astral.sh/uv/), ein API-Key
@@ -173,6 +320,41 @@ Beim ersten Start legt die App automatisch `advisor_sessions.db` im
 Projektverzeichnis an (SQLite, Nutzerprofile pro Konversation – überlebt
 Server-Neustarts). Kein manueller Schritt nötig; Pfad optional über
 `ADVISOR_DB_PATH` in der `.env` änderbar.
+
+### Konfiguration (Umgebungsvariablen)
+
+Alle Einstellungen kommen aus der Umgebung bzw. der lokalen `.env`
+(Vorlage: [.env.example](.env.example)); keine davon ist zwingend außer dem
+Zugang zum Modell. Ausgewertet werden sie in
+[`config.py`](src/advisor/config.py).
+
+| Variable | Standard | Bedeutung |
+|---|---|---|
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` | – | API-Key bei direkter Provider-Nutzung |
+| `ADVISOR_MODEL` | `openai:gpt-4o-mini` | Modell im Format `<provider>:<modell>` (nur ohne LiteLLM) |
+| `USE_LITELLM` | aus | `1`/`true`/`yes` erzwingt den LiteLLM-Betrieb; aktiviert sich auch automatisch, wenn `LITELLM_SERVER_URL` **und** `LITELLM_API_KEY` gesetzt sind |
+| `LITELLM_SERVER_URL` | `http://localhost:4000` | Basis-URL des LiteLLM-Proxys (für die HKA: `https://llm.hka-cloud.de`) |
+| `LITELLM_API_KEY` | – | Virtual Key des Proxys |
+| `LITELLM_MODEL` | `gpt-4o-mini` | Modell-ID **wie der Proxy sie listet** (hier: `gemini-3-flash-preview`) |
+| `ADVISOR_DB_PATH` | `advisor_sessions.db` | Pfad der SQLite-Datei für die Profile, relativ zum Startverzeichnis |
+| `ADVISOR_REASONING_EFFORT` | `low` | Reasoning-Aufwand (`none`…`max`). `medium` bringt gründlichere Recherche bei längerer Wartezeit; wird nur an OpenAI-/gpt-oss-Modelle gesendet |
+| `ADVISOR_REQUEST_TIMEOUT_S` | `120` | Timeout je Modellanfrage in Sekunden |
+| `ADVISOR_MAX_TOKENS` | `6000` | Token-Limit je Antwort; zu klein → abgeschnittene Tool-Argumente |
+
+### API-Endpunkte
+
+Die Web-Schicht ([`webapp.py`](src/advisor/webapp.py)) stellt neben der Chat-UI
+unter `/` diese Endpunkte bereit. `{chat_id}` ist die Konversations-ID der
+Chat-UI und bestimmt, welches Profil verwendet wird.
+
+| Endpunkt | Methode | Zweck |
+|---|---|---|
+| `/api/chat` | POST | Chat-Stream (Vercel AI Data Stream); führt den Agenten aus und persistiert das Profil nach Abschluss des Streams |
+| `/api/configure` | GET | Modell-Liste für den Selector der UI |
+| `/api/health` | GET | Statusprüfung inkl. Anzahl aktiver Sitzungen |
+| `/api/state/{chat_id}` | GET | Beratungsstatus: Phase, erfasste Angaben, Fortschritt, Risiko inkl. Verlauf, Strategie, Umschichtungsplan |
+| `/api/profile/{chat_id}` | POST | Mehrere Profilfelder auf einmal setzen (Eingabe-Formular der UI); validiert wie das Agenten-Tool, aber ohne Umweg über das LLM |
+| `/api/export/{chat_id}` | GET | Beratungszusammenfassung als Markdown-Download, mit `?format=html` als Druckansicht („Als PDF speichern") |
 
 ### Tests und Qualitätssicherung
 
@@ -364,13 +546,12 @@ Konfigurations-/Key-Management-Pattern (inkl. optionalem LiteLLM-Betrieb).
   ρ = 0,2), im Code dokumentiert und leicht änderbar; siehe auch
   [LIMITATIONS.md](LIMITATIONS.md).
 - **Fachlogik unabhängig von der Sorgfalt des Sprachmodells:** Sicherheits-
-  relevante Felder werden aus dem Dialog abgeleitet statt darauf zu vertrauen,
-  dass das LLM sie mitspeichert. Beispiel `hat_konsumschulden`: Das Feld
-  steuert eine harte Kappung der Aktienquote, wird aber nicht separat
-  abgefragt – ein Validator leitet es aus dem Freitext zu den Schulden ab
-  („Ratenkredit" → ja, „keine" → nein). Immobilienkredite zählen bewusst
-  nicht als Konsumschulden, da eine Sondertilgung dort die Geldanlage in der
-  Regel nicht schlägt.
+  relevante Felder werden aus dem Dialog abgeleitet, Freitext wird tolerant
+  normalisiert, und die Berechnungs-Tools verweigern die Ausgabe bei
+  unvollständigem Profil – Details unter
+  [Robustheit gegenüber dem Sprachmodell](#robustheit-gegenüber-dem-sprachmodell).
+  Hintergrund: Ein schwächeres Modell speicherte in Tests einzelne Angaben
+  nicht mit, wodurch eine harte Kappung der Aktienquote ausblieb.
 
 ## Verbesserungsvorschläge / Roadmap
 
