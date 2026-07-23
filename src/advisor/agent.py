@@ -28,7 +28,7 @@ from advisor.config import (
 )
 from advisor.profile import AdvisorDeps, UserProfile
 from advisor.prompts import SYSTEM_PROMPT
-from advisor.rebalancing import Position, erstelle_umschichtungsplan
+from advisor.rebalancing import Position, erstelle_umschichtungsplan, ist_deutscher_steuerkontext
 from advisor.risk import ermittle_risikoprofil
 from advisor.strategy import erstelle_strategie
 
@@ -266,6 +266,9 @@ def erstelle_umschichtungsplan_tool(
         neues_kapital_eur=p.einmalbetrag_eur or 0.0,
         gebuehr_prozent=gebuehr_prozent,
         gebuehr_min_eur=gebuehr_min_eur,
+        # Abgeltungsteuer/Teilfreistellung gelten nur im deutschen Rechtsrahmen;
+        # bei anderem/unklarem Steuerkontext wird keine Steuer geschätzt (siehe rebalancing.py).
+        steuerschaetzung_de=ist_deutscher_steuerkontext(p.land_steuerkontext),
     )
     ctx.deps.letztes_risiko = risiko.__dict__
     ctx.deps.letzte_strategie = strategie

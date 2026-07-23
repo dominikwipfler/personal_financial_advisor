@@ -1,6 +1,6 @@
 """Tests der Umschichtungs-Engine (Kauf-/Verkaufsempfehlungen mit Gebühren)."""
 
-from advisor.rebalancing import Position, erstelle_umschichtungsplan
+from advisor.rebalancing import Position, erstelle_umschichtungsplan, ist_deutscher_steuerkontext
 
 ZIEL = {
     "aktien_welt_industrielaender": 47.7,
@@ -134,3 +134,31 @@ def test_unbekannter_einstand_gibt_hinweis_statt_schaetzung():
     verkauf = plan["verkaeufe"][0]
     assert "geschaetzter_gewinn_eur" not in verkauf
     assert "unbekannt" in verkauf["steuer_hinweis"]
+
+
+def test_ist_deutscher_steuerkontext_erkennt_gaengige_schreibweisen():
+    assert ist_deutscher_steuerkontext("Deutschland") is True
+    assert ist_deutscher_steuerkontext("deutschland") is True
+    assert ist_deutscher_steuerkontext("Germany") is True
+    assert ist_deutscher_steuerkontext("DE") is True
+    assert ist_deutscher_steuerkontext("Österreich") is False
+    assert ist_deutscher_steuerkontext("Schweiz") is False
+    assert ist_deutscher_steuerkontext(None) is False
+    assert ist_deutscher_steuerkontext("") is False
+
+
+def test_keine_steuerschaetzung_bei_nicht_deutschem_steuerkontext():
+    """Bei anderem Steuerkontext werden keine (falschen) deutschen Steuern geschätzt."""
+    positionen = [
+        Position(
+            name="World", wert_eur=30000, einstandswert_eur=20000,
+            kategorie="aktien_welt_industrielaender",
+        ),
+    ]
+    plan = erstelle_umschichtungsplan(positionen, ZIEL, neues_kapital_eur=0, steuerschaetzung_de=False)
+    verkauf = next(v for v in plan["verkaeufe"] if v["kategorie"] == "aktien_welt_industrielaender")
+    assert "geschaetzte_steuer_eur" not in verkauf
+    assert "geschaetzter_gewinn_eur" not in verkauf
+    assert "nicht Deutschland" in verkauf["steuer_hinweis"]
+    assert plan["geschaetzte_steuer_summe_eur"] == 0.0
+    assert not any("Abgeltungsteuer" in h for h in plan["hinweise"])

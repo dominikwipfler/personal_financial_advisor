@@ -69,6 +69,19 @@ def _gebuehr(betrag: float, prozent: float, minimum: float) -> float:
     return round(max(minimum, betrag * prozent / 100), 2)
 
 
+def ist_deutscher_steuerkontext(land: str | None) -> bool:
+    """Prüft, ob der angegebene Steuerkontext (grob) Deutschland entspricht.
+
+    Die Steuerschätzung (Abgeltungsteuer/Teilfreistellung) gilt nur für den
+    deutschen Rechtsrahmen; bei anderen/unklaren Angaben wird sie nicht
+    berechnet, um keine falschen ausländischen Steuerbeträge vorzugaukeln.
+    """
+    if not land:
+        return False
+    s = land.strip().lower()
+    return any(k in s for k in ("deutschland", "germany", "bundesrepublik")) or s in ("de", "d")
+
+
 def erstelle_umschichtungsplan(
     positionen: list[Position],
     ziel_allokation_prozent: dict[str, float],
@@ -77,6 +90,7 @@ def erstelle_umschichtungsplan(
     gebuehr_min_eur: float = 1.0,
     schwelle_prozentpunkte: float = 5.0,
     min_handelsbetrag_eur: float = 200.0,
+    steuerschaetzung_de: bool = True,
 ) -> dict[str, Any]:
     """Kauf-/Verkaufsliste vom Ist-Depot zur Ziel-Allokation berechnen."""
     ist: dict[str, float] = {}
@@ -125,7 +139,16 @@ def erstelle_umschichtungsplan(
             }
             # Steuer-Schätzung: anteiliger Gewinn/Verlust des Verkaufs, sofern
             # der Einstandswert aller Positionen der Kategorie bekannt ist.
-            if einstand_vollstaendig.get(k) and ist.get(k, 0) > 0:
+            # Gilt nur für den deutschen Rechtsrahmen (Abgeltungsteuer/
+            # Teilfreistellung) – bei anderem/unklarem Steuerkontext würden
+            # sonst falsche ausländische Steuerbeträge suggeriert.
+            if not steuerschaetzung_de:
+                trade["steuer_hinweis"] = (
+                    "Keine Steuerschätzung: Der angegebene Steuerkontext ist nicht Deutschland "
+                    "(oder unbekannt). Abgeltungsteuer und Teilfreistellung gelten nur für in "
+                    "Deutschland steuerpflichtige Personen – bitte lokale Regeln separat prüfen."
+                )
+            elif einstand_vollstaendig.get(k) and ist.get(k, 0) > 0:
                 gewinn_quote = (ist[k] - einstand[k]) / ist[k]
                 gewinn = uebergewicht * gewinn_quote
                 trade["geschaetzter_gewinn_eur"] = round(gewinn, 2)
@@ -194,7 +217,7 @@ def erstelle_umschichtungsplan(
         "Reihenfolge: erst neues Kapital einsetzen, dann (falls nötig) verkaufen – "
         "das hält Gebühren und Steuerlast minimal.",
     ]
-    if verkaeufe:
+    if verkaeufe and steuerschaetzung_de:
         hinweise.append(
             "Steuern (Deutschland, vereinfacht): Realisierte Gewinne unterliegen der "
             "Abgeltungsteuer (25 % + Soli ≈ 26,4 %); bei Aktienfonds sind 30 % der Erträge "
@@ -202,6 +225,12 @@ def erstelle_umschichtungsplan(
             "Freistellungsauftrag stellen!) bleibt steuerfrei. Gewinne und Verluste desselben "
             "Jahres werden automatisch verrechnet; nicht genutzte Verluste trägt der Broker "
             "ins Folgejahr vor. Alles allgemeine Information, keine Steuerberatung."
+        )
+    elif verkaeufe:
+        hinweise.append(
+            "Steuern: Die eingebaute Schätzung deckt nur den deutschen Rechtsrahmen ab. Beim "
+            "angegebenen Steuerkontext bitte die Besteuerung von Kapitalerträgen separat prüfen "
+            "(z. B. steuerlichen Berater vor Ort fragen) – keine Steuerberatung."
         )
     # Steueroptimierung: Verlustpositionen identifizieren, deren Realisierung
     # Gewinne aus den Verkäufen ausgleichen könnte (Verlustverrechnung).
