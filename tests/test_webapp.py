@@ -12,7 +12,10 @@ from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls
 from starlette.testclient import TestClient
 
 from advisor.agent import agent
-from advisor.webapp import SessionStore, create_app
+from advisor.profile import AdvisorDeps, UserProfile
+from advisor.risk import ermittle_risikoprofil
+from advisor.strategy import erstelle_strategie
+from advisor.webapp import SessionStore, _export_markdown, _session_state, create_app
 
 
 def test_session_store_trennt_und_verdraengt():
@@ -80,3 +83,143 @@ def test_health_und_configure_endpunkte():
     assert client.get("/api/health").json()["ok"] is True
     config = client.get("/api/configure").json()
     assert "models" in config and len(config["models"]) >= 1
+
+
+def _vollstaendiges_profil() -> UserProfile:
+    return UserProfile(
+        anlageziel="Altersvorsorge",
+        zeithorizont_jahre=30,
+        alter=30,
+        land_steuerkontext="Deutschland",
+        anlageerfahrung="grundkenntnisse",
+        vorhandene_anlagen="Tagesgeld 10k",
+        depot_vorhanden=False,
+        monatliche_sparrate_eur=400,
+        einmalbetrag_eur=5000,
+        schulden="keine",
+        hat_konsumschulden=False,
+        notgroschen_monatsausgaben=6,
+        reaktion_kursverlust_20_prozent="gelassen_halten",
+        max_akzeptierter_verlust_prozent=30,
+    )
+
+
+def test_state_endpunkt_spiegelt_beratungsphase():
+    app = create_app(agent)
+    client = TestClient(app)
+
+    # Neue Konversation: Profil noch leer -> Phase "profil".
+    state = client.get("/api/state/chat-neu").json()
+    assert state["phase"] == "profil"
+    assert state["profilFortschritt"] == {"erfasst": 0, "gesamt": 13}
+    assert state["risiko"] is None
+    assert state["strategie"] is None
+
+    # Vollständiges Profil, aber Risiko/Strategie noch nicht berechnet.
+    sessions: SessionStore = app.state.sessions
+    deps = sessions.get("chat-voll")
+    deps.profile = _vollstaendiges_profil()
+    state = client.get("/api/state/chat-voll").json()
+    assert state["phase"] == "risiko"
+
+    # Risiko berechnet, Strategie noch offen.
+    risiko = ermittle_risikoprofil(deps.profile)
+    deps.profile = deps.profile.model_copy(update={"risikoklasse": risiko.risikoklasse})
+    deps.letztes_risiko = risiko.__dict__
+    state = client.get("/api/state/chat-voll").json()
+    assert state["phase"] == "strategie"
+    assert state["risiko"]["risikoklasse"] == risiko.risikoklasse
+
+    # Strategie berechnet -> abgeschlossen.
+    deps.letzte_strategie = erstelle_strategie(deps.profile, risiko)
+    state = client.get("/api/state/chat-voll").json()
+    assert state["phase"] == "abgeschlossen"
+    assert "aktien_welt_industrielaender" in state["strategie"]["allokation_prozent"]
+    assert abs(sum(state["strategie"]["allokation_prozent"].values()) - 100) < 0.2
+
+
+def test_profile_endpunkt_uebernimmt_formular_felder_ohne_llm():
+    app = create_app(agent)
+    client = TestClient(app)
+
+    r = client.post(
+        "/api/profile/chat-formular",
+        json={
+            "anlageziel": "Altersvorsorge",
+            "alter": 42,
+            "depot_vorhanden": False,
+            "monatliche_sparrate_eur": 250,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["profil"]["Anlageziel"] == "Altersvorsorge"
+    assert body["profil"]["Alter"] == 42
+    assert body["profil"]["Depot vorhanden"] is False
+
+    sessions: SessionStore = app.state.sessions
+    deps = sessions.get("chat-formular")
+    assert deps.profile.alter == 42
+    assert deps.profile.monatliche_sparrate_eur == 250
+
+
+def test_profile_endpunkt_ignoriert_client_seitige_risikoklasse():
+    app = create_app(agent)
+    client = TestClient(app)
+    client.post("/api/profile/chat-x", json={"alter": 30, "risikoklasse": 5})
+    sessions: SessionStore = app.state.sessions
+    assert sessions.get("chat-x").profile.risikoklasse is None
+
+
+def test_profile_endpunkt_lehnt_ungueltige_werte_ab():
+    app = create_app(agent)
+    client = TestClient(app)
+    r = client.post("/api/profile/chat-invalid", json={"anlageerfahrung": "quatsch"})
+    assert r.status_code == 400
+
+
+def test_export_liefert_markdown_mit_profil_und_strategie():
+    deps = AdvisorDeps()
+    deps.profile = _vollstaendiges_profil()
+    risiko = ermittle_risikoprofil(deps.profile)
+    deps.letztes_risiko = risiko.__dict__
+    deps.letzte_strategie = erstelle_strategie(deps.profile, risiko)
+
+    markdown = _export_markdown(deps)
+    assert "Altersvorsorge" in markdown
+    assert "Risikoklasse" in markdown
+    assert "Strategie: Asset-Allokation" in markdown
+    assert "keine zugelassene Anlage-, Steuer- oder Rechtsberatung" in markdown
+
+
+def test_export_endpunkt_liefert_download_und_druckansicht():
+    app = create_app(agent)
+    client = TestClient(app)
+    sessions: SessionStore = app.state.sessions
+    sessions.get("chat-export").profile = _vollstaendiges_profil()
+
+    r_md = client.get("/api/export/chat-export")
+    assert r_md.status_code == 200
+    assert "markdown" in r_md.headers["content-type"]
+    assert "attachment" in r_md.headers["content-disposition"]
+    assert "Altersvorsorge" in r_md.text
+
+    r_html = client.get("/api/export/chat-export?format=html")
+    assert r_html.status_code == 200
+    assert "text/html" in r_html.headers["content-type"]
+    assert "window.print()" in r_html.text
+
+
+def test_profil_zuruecksetzen_loescht_auch_strategie_state():
+    deps = AdvisorDeps()
+    deps.profile = _vollstaendiges_profil()
+    risiko = ermittle_risikoprofil(deps.profile)
+    deps.letztes_risiko = risiko.__dict__
+    deps.letzte_strategie = erstelle_strategie(deps.profile, risiko)
+
+    deps.reset()
+
+    assert deps.letztes_risiko is None
+    assert deps.letzte_strategie is None
+    assert deps.letzter_umschichtungsplan is None
+    assert _session_state(deps)["phase"] == "profil"

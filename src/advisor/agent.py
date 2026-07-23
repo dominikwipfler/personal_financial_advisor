@@ -211,6 +211,7 @@ def ermittle_risikoprofil_tool(ctx: RunContext[AdvisorDeps]) -> str:
 
     ergebnis = ermittle_risikoprofil(p)
     ctx.deps.profile = p.model_copy(update={"risikoklasse": ergebnis.risikoklasse})
+    ctx.deps.letztes_risiko = ergebnis.__dict__
     return json.dumps(ergebnis.__dict__, ensure_ascii=False, indent=1)
 
 
@@ -228,6 +229,8 @@ def erstelle_strategie_tool(ctx: RunContext[AdvisorDeps]) -> str:
 
     risiko = ermittle_risikoprofil(p)
     strategie = erstelle_strategie(p, risiko)
+    ctx.deps.letztes_risiko = risiko.__dict__
+    ctx.deps.letzte_strategie = strategie
     return json.dumps(strategie, ensure_ascii=False, indent=1)
 
 
@@ -264,6 +267,9 @@ def erstelle_umschichtungsplan_tool(
         gebuehr_prozent=gebuehr_prozent,
         gebuehr_min_eur=gebuehr_min_eur,
     )
+    ctx.deps.letztes_risiko = risiko.__dict__
+    ctx.deps.letzte_strategie = strategie
+    ctx.deps.letzter_umschichtungsplan = plan
     return json.dumps(plan, ensure_ascii=False, indent=1)
 
 

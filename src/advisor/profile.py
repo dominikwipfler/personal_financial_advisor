@@ -11,7 +11,7 @@ Fragen nicht erneut gestellt werden.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -204,9 +204,20 @@ class AdvisorDeps:
     Hinweis: `agent.to_web(deps=...)` verwendet dasselbe Deps-Objekt für alle
     Requests des Server-Prozesses. Für den vorgesehenen Einsatz (lokale
     Einzelnutzer-App) ist das ausreichend; siehe LIMITATIONS.md.
+
+    `letztes_risiko`, `letzte_strategie` und `letzter_umschichtungsplan`
+    spiegeln lediglich die letzten Tool-Ergebnisse der Konversation (für die
+    Status-/Export-Ansicht der Web-UI, siehe `webapp.py`); die fachliche
+    Berechnung bleibt vollständig in `risk.py`/`strategy.py`/`rebalancing.py`.
     """
 
     profile: UserProfile = field(default_factory=UserProfile)
+    letztes_risiko: dict[str, Any] | None = None
+    letzte_strategie: dict[str, Any] | None = None
+    letzter_umschichtungsplan: dict[str, Any] | None = None
 
     def reset(self) -> None:
         self.profile = UserProfile()
+        self.letztes_risiko = None
+        self.letzte_strategie = None
+        self.letzter_umschichtungsplan = None

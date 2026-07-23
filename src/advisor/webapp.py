@@ -20,10 +20,11 @@ import sys
 import traceback
 from collections import OrderedDict
 from collections.abc import Mapping
+from datetime import datetime
 
 from starlette.applications import Starlette
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, Response
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from starlette.routing import Mount, Route
 
 from pydantic import BaseModel
@@ -36,10 +37,160 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.ui._web.app import _get_ui_html  # pyright: ignore[reportPrivateUsage]
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 
-from advisor.profile import AdvisorDeps
+from advisor.profile import PFLICHTANGABEN, AdvisorDeps, UserProfile
 
 MAX_SESSIONS = 200
 _CHAT_RETRY_DELAYS_S = (0.5, 1.5, 3.0)
+
+# Menschenlesbare Feldnamen für Status-Panel und Export (siehe UserProfile).
+_PROFIL_LABELS: dict[str, str] = {
+    "anlageziel": "Anlageziel",
+    "zeithorizont_jahre": "Zeithorizont (Jahre)",
+    "vorhandene_anlagen": "Vorhandene Anlagen",
+    "depot_vorhanden": "Depot vorhanden",
+    "monatliche_sparrate_eur": "Monatliche Sparrate (EUR)",
+    "einmalbetrag_eur": "Einmalbetrag (EUR)",
+    "reaktion_kursverlust_20_prozent": "Reaktion auf −20 % Kursverlust",
+    "max_akzeptierter_verlust_prozent": "Max. akzeptierter Verlust (%)",
+    "schulden": "Schulden",
+    "hat_konsumschulden": "Konsumschulden vorhanden",
+    "notgroschen_monatsausgaben": "Notgroschen (Monatsausgaben)",
+    "alter": "Alter",
+    "land_steuerkontext": "Land / Steuerkontext",
+    "anlageerfahrung": "Anlageerfahrung",
+}
+
+
+def _session_state(deps: AdvisorDeps) -> dict:
+    """Kompakter Session-Status für das Status-Panel der Web-UI (siehe _UI_ENHANCEMENTS)."""
+    p = deps.profile
+    offen = p.fehlende_angaben()
+    erfasst = len(PFLICHTANGABEN) - len(offen)
+
+    if offen:
+        phase = "profil"
+    elif p.risikoklasse is None:
+        phase = "risiko"
+    elif deps.letzte_strategie is None:
+        phase = "strategie"
+    else:
+        phase = "abgeschlossen"
+
+    return {
+        "phase": phase,
+        "profil": {
+            _PROFIL_LABELS.get(k, k): v
+            for k, v in p.model_dump(exclude_none=True).items()
+            if k != "risikoklasse"
+        },
+        "profilFortschritt": {"erfasst": erfasst, "gesamt": len(PFLICHTANGABEN)},
+        "risiko": deps.letztes_risiko,
+        "strategie": deps.letzte_strategie,
+        "umschichtungsplan": deps.letzter_umschichtungsplan,
+    }
+
+
+def _export_markdown(deps: AdvisorDeps) -> str:
+    """Baut die Beratungszusammenfassung als Markdown (Export-Button der Web-UI)."""
+    p = deps.profile
+    zeilen: list[str] = [
+        "# Persönliche Anlagestrategie – Zusammenfassung",
+        "",
+        f"_Erstellt am {datetime.now().strftime('%d.%m.%Y %H:%M')} Uhr_",
+        "",
+        "> Hochschulprojekt – keine zugelassene Anlage-, Steuer- oder "
+        "Rechtsberatung. Allgemeine Informationen ohne Garantien oder "
+        "Renditeversprechen. Kapitalanlagen können zu Verlusten führen.",
+        "",
+        "## Profil",
+    ]
+
+    profil_werte = p.model_dump(exclude_none=True)
+    for feld, label in _PROFIL_LABELS.items():
+        if feld in profil_werte:
+            zeilen.append(f"- **{label}:** {profil_werte[feld]}")
+    if not any(feld in profil_werte for feld in _PROFIL_LABELS):
+        zeilen.append("- _Noch keine Angaben erfasst._")
+
+    risiko = deps.letztes_risiko
+    if risiko:
+        zeilen += [
+            "",
+            "## Risikoprofil",
+            f"- **Risikoklasse:** {risiko.get('risikoklasse')} "
+            f"({risiko.get('klassen_name')})",
+            f"- **Aktienquote (nutzenoptimal):** "
+            f"{round((risiko.get('aktienquote_unbegrenzt') or 0) * 100, 1)} %",
+            f"- **Aktienquote (empfohlen, nach Kappungen):** "
+            f"{round((risiko.get('aktienquote_empfohlen') or 0) * 100, 1)} %",
+        ]
+        for begrenzung in risiko.get("begrenzungen") or []:
+            zeilen.append(f"  - {begrenzung}")
+
+    strategie = deps.letzte_strategie
+    if strategie:
+        zeilen += ["", "## Strategie: Asset-Allokation"]
+        for baustein, prozent in strategie.get("allokation_prozent", {}).items():
+            zeilen.append(f"- {baustein.replace('_', ' ')}: {prozent} %")
+
+        sparplan = strategie.get("sparplan_aufteilung_eur") or {}
+        if sparplan:
+            zeilen += ["", "## Sparplan-Aufteilung (monatlich)"]
+            for baustein, betrag in sparplan.items():
+                zeilen.append(f"- {baustein.replace('_', ' ')}: {betrag} €")
+
+        einmal = strategie.get("einmalbetrag_aufteilung_eur") or {}
+        if einmal:
+            zeilen += ["", "## Einmalbetrag-Aufteilung"]
+            for baustein, betrag in einmal.items():
+                zeilen.append(f"- {baustein.replace('_', ' ')}: {betrag} €")
+
+        hinweise = strategie.get("hinweise") or []
+        if hinweise:
+            zeilen += ["", "## Hinweise"]
+            for hinweis in hinweise:
+                zeilen.append(f"- {hinweis}")
+
+    plan = deps.letzter_umschichtungsplan
+    if plan and "fehler" not in plan:
+        zeilen += [
+            "",
+            "## Umschichtungsplan",
+            f"- Handelsvolumen: {plan.get('handelsvolumen_eur')} €",
+            f"- Gebühren gesamt: {plan.get('gebuehren_summe_eur')} €",
+            f"- Geschätzte Steuer: {plan.get('geschaetzte_steuer_summe_eur')} €",
+        ]
+        for kauf in plan.get("kaeufe") or []:
+            zeilen.append(f"  - Kauf {kauf.get('kategorie')}: {kauf.get('betrag_eur')} €")
+        for verkauf in plan.get("verkaeufe") or []:
+            zeilen.append(f"  - Verkauf {verkauf.get('kategorie')}: {verkauf.get('betrag_eur')} €")
+
+    return "\n".join(zeilen) + "\n"
+
+
+def _export_print_html(markdown: str) -> str:
+    """Druckfreundliche HTML-Ansicht der Export-Zusammenfassung ('Als PDF speichern')."""
+    escaped = (
+        markdown.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    )
+    return f"""<!doctype html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<title>Anlagestrategie – Zusammenfassung</title>
+<style>
+  body {{
+      font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+      max-width: 760px; margin: 32px auto; padding: 0 24px; color: #111;
+      white-space: pre-wrap;
+  }}
+  @media print {{ body {{ margin: 0; }} }}
+</style>
+</head>
+<body>{escaped}
+<script>window.onload = function () {{ window.print(); }};</script>
+</body>
+</html>"""
 
 
 class SessionStore:
@@ -77,71 +228,534 @@ class _ChatRequestExtra(BaseModel, extra="ignore", alias_generator=to_camel):
     model: str | None = None
 
 
-def _inject_error_overlay(html: str) -> str:
-        overlay = """
+def _inject_ui_enhancements(html: str) -> str:
+    """Schleust additive Status-/Fehler-/Beratungs-UI vor `</body>` ein.
+
+    Die eigentliche Chat-UI kommt fertig gebündelt vom CDN (siehe Docstring
+    oben) – ihre React-Interna sind hier unbekannt und nicht Teil dieses
+    Repos. Alles unten ist daher bewusst additiv (eigene, fest positionierte
+    Elemente) statt in die bestehende Oberfläche integriert: robust gegen
+    CDN-Updates, aber optisch nicht nahtlos. Schnellwahl-Buttons versuchen
+    per Best-Effort (nativer Value-Setter + Enter-Keydown), das gefundene
+    `<textarea>` der Chat-UI zu befüllen und abzusenden; schlägt das fehl,
+    bleibt der Text zum manuellen Absenden stehen.
+    """
+    overlay = """
 <style>
+#advisor-status-pill {
+    position: fixed; top: 12px; left: 12px; z-index: 9998;
+    display: flex; align-items: center; gap: 7px;
+    padding: 6px 12px; border-radius: 999px;
+    background: rgba(30, 30, 35, 0.85); color: #fff;
+    font: 13px/1.3 system-ui, -apple-system, "Segoe UI", sans-serif;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.18);
+}
+#advisor-status-pill .advisor-dot {
+    width: 8px; height: 8px; border-radius: 50%; background: #9ca3af; flex: none;
+}
+#advisor-status-pill[data-state="idle"] .advisor-dot { background: #22c55e; }
+#advisor-status-pill[data-state="working"] .advisor-dot { background: #3b82f6; animation: advisor-pulse 1s infinite; }
+#advisor-status-pill[data-state="error"] .advisor-dot { background: #ef4444; }
+#advisor-status-pill[data-state="loading"] .advisor-dot { background: #f59e0b; }
+@keyframes advisor-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+
 #advisor-error-banner {
-    position: fixed;
-    right: 16px;
-    bottom: 16px;
-    z-index: 9999;
+    position: fixed; right: 16px; bottom: 16px; z-index: 9999;
     max-width: min(540px, calc(100vw - 32px));
-    padding: 12px 14px;
-    border-radius: 12px;
+    padding: 12px 14px; border-radius: 12px;
     border: 1px solid rgba(220, 38, 38, 0.35);
-    background: rgba(127, 29, 29, 0.96);
-    color: #fff;
+    background: rgba(127, 29, 29, 0.96); color: #fff;
     box-shadow: 0 12px 32px rgba(0, 0, 0, 0.24);
     font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     display: none;
 }
 #advisor-error-banner strong { display: block; margin-bottom: 4px; }
+#advisor-error-banner .advisor-actions { display: flex; gap: 8px; margin-top: 10px; }
 #advisor-error-banner button {
-    margin-top: 10px;
-    padding: 6px 10px;
-    border: 0;
-    border-radius: 8px;
-    background: rgba(255,255,255,0.18);
-    color: inherit;
-    cursor: pointer;
+    padding: 6px 10px; border: 0; border-radius: 8px;
+    background: rgba(255,255,255,0.18); color: inherit; cursor: pointer;
+}
+#advisor-error-banner button:hover { background: rgba(255,255,255,0.28); }
+
+#advisor-panel-tab {
+    position: fixed; right: 0; top: 45%; transform: translateY(-50%);
+    z-index: 9990; writing-mode: vertical-rl; text-orientation: mixed;
+    padding: 10px 6px; border-radius: 10px 0 0 10px; cursor: pointer;
+    background: #111827; color: #fff; font: 12px/1 system-ui, sans-serif;
+    box-shadow: -4px 0 12px rgba(0,0,0,0.15); letter-spacing: 0.02em;
+}
+#advisor-panel {
+    position: fixed; top: 0; right: 0; height: 100vh; width: min(340px, 92vw);
+    z-index: 9991; background: #ffffff; color: #111827;
+    box-shadow: -8px 0 24px rgba(0,0,0,0.18);
+    transform: translateX(100%); transition: transform 0.25s ease;
+    overflow-y: auto; font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    padding: 16px;
+}
+#advisor-panel.advisor-open { transform: translateX(0); }
+@media (prefers-color-scheme: dark) {
+    #advisor-panel { background: #17181c; color: #e5e7eb; }
+}
+#advisor-panel h3 { margin: 0 0 12px; font-size: 15px; }
+#advisor-panel h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
+#advisor-panel-close { position: absolute; top: 12px; right: 14px; cursor: pointer; background: none; border: 0; font-size: 16px; color: inherit; }
+
+.advisor-stepper { display: flex; justify-content: space-between; margin: 8px 0 18px; }
+.advisor-step { flex: 1; text-align: center; font-size: 11px; opacity: 0.55; position: relative; }
+.advisor-step span { display: block; width: 10px; height: 10px; border-radius: 50%; background: #9ca3af; margin: 0 auto 4px; }
+.advisor-step-active { opacity: 1; font-weight: 600; }
+.advisor-step-active span { background: #3b82f6; }
+.advisor-step-done { opacity: 0.9; }
+.advisor-step-done span { background: #22c55e; }
+
+.advisor-card {
+    border: 1px solid rgba(120,120,120,0.25); border-radius: 10px;
+    padding: 10px 12px; margin-bottom: 10px;
+}
+.advisor-bar { height: 6px; border-radius: 999px; background: rgba(120,120,120,0.25); overflow: hidden; margin-bottom: 6px; }
+.advisor-bar-fill { height: 100%; background: #3b82f6; }
+.advisor-kv { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
+.advisor-kv span { opacity: 0.65; }
+.advisor-kv b { text-align: right; }
+.advisor-card-export button {
+    display: block; width: 100%; margin-top: 6px; padding: 8px 10px;
+    border: 1px solid rgba(120,120,120,0.35); border-radius: 8px;
+    background: transparent; color: inherit; cursor: pointer; font: inherit;
+}
+#advisor-footer-info { margin-top: 6px; font-size: 11px; opacity: 0.6; }
+
+#advisor-empty-overlay {
+    position: fixed; top: 48px; left: 50%; transform: translateX(-50%);
+    z-index: 9989; width: min(640px, calc(100vw - 32px));
+    max-height: calc(100vh - 96px); overflow-y: auto;
+    background: rgba(255,255,255,0.98); color: #111827;
+    border: 1px solid rgba(120,120,120,0.2); border-radius: 14px;
+    box-shadow: 0 12px 32px rgba(0,0,0,0.16); padding: 18px 20px;
+    font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+@media (prefers-color-scheme: dark) {
+    #advisor-empty-overlay { background: rgba(23,24,28,0.98); color: #e5e7eb; }
+}
+#advisor-empty-overlay.advisor-hidden { display: none; }
+#advisor-empty-overlay h2 { margin: 0 0 6px; font-size: 17px; }
+#advisor-empty-overlay p { margin: 0 0 12px; opacity: 0.75; }
+#advisor-empty-overlay .advisor-hint { font-size: 12px; opacity: 0.6; margin-top: 8px; }
+#advisor-empty-overlay .advisor-close {
+    position: absolute; top: 10px; right: 12px; background: none; border: 0;
+    cursor: pointer; font-size: 15px; color: inherit; opacity: 0.6;
+}
+#advisor-profile-form {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; margin-top: 4px;
+}
+#advisor-profile-form label {
+    display: flex; flex-direction: column; gap: 3px; font-size: 12px; opacity: 0.85; margin-bottom: 8px;
+}
+#advisor-profile-form input, #advisor-profile-form select {
+    font: inherit; font-size: 13px; padding: 7px 8px; border-radius: 8px;
+    border: 1px solid rgba(120,120,120,0.35); background: transparent; color: inherit;
+}
+#advisor-profile-form .advisor-form-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; margin-top: 4px; }
+#advisor-profile-form button[type="submit"] {
+    padding: 9px 16px; border-radius: 8px; border: 0; cursor: pointer; font: inherit; font-weight: 600;
+    background: #3b82f6; color: #fff;
+}
+#advisor-profile-form button[type="submit"]:hover { background: #2563eb; }
+#advisor-skip-form {
+    background: none; border: 0; color: inherit; opacity: 0.65; cursor: pointer; font: inherit; text-decoration: underline;
 }
 </style>
+
+<div id="advisor-status-pill" data-state="loading"><span class="advisor-dot"></span><span id="advisor-status-text">Modell lädt…</span></div>
+
 <div id="advisor-error-banner" role="alert" aria-live="assertive">
     <strong>Modellfehler</strong>
     <div id="advisor-error-banner-text"></div>
-    <button type="button" onclick="document.getElementById('advisor-error-banner').style.display='none'">Schließen</button>
+    <div class="advisor-actions">
+        <button type="button" id="advisor-error-model-hint">Modell wechseln</button>
+        <button type="button" onclick="document.getElementById('advisor-error-banner').style.display='none'">Schließen</button>
+    </div>
 </div>
+
+<div id="advisor-panel-tab">Beratungsstatus</div>
+<aside id="advisor-panel">
+    <button id="advisor-panel-close" aria-label="Schließen">×</button>
+    <h3>Beratungsstatus</h3>
+    <div id="advisor-stepper" class="advisor-stepper"></div>
+    <div id="advisor-cards"></div>
+    <div id="advisor-footer-info"></div>
+</aside>
+
+<div id="advisor-empty-overlay">
+    <button class="advisor-close" aria-label="Schließen">×</button>
+    <h2>Willkommen 👋</h2>
+    <p>Trag hier kurz deine Eckdaten ein – die genauere Risikoeinschätzung (z. B. Reaktion auf Kursverluste) klärt der Chat direkt im Anschluss mit dir.</p>
+    <form id="advisor-profile-form">
+        <label>Anlageziel
+            <input name="anlageziel" type="text" placeholder="z. B. Altersvorsorge, Vermögensaufbau">
+        </label>
+        <label>Zeithorizont (Jahre)
+            <input name="zeithorizont_jahre" type="number" min="0" step="1">
+        </label>
+        <label>Alter
+            <input name="alter" type="number" min="0" step="1">
+        </label>
+        <label>Land / Steuerkontext
+            <input name="land_steuerkontext" type="text" value="Deutschland">
+        </label>
+        <label>Anlageerfahrung
+            <select name="anlageerfahrung">
+                <option value="">– bitte wählen –</option>
+                <option value="keine">Keine</option>
+                <option value="grundkenntnisse">Grundkenntnisse</option>
+                <option value="fortgeschritten">Fortgeschritten</option>
+                <option value="sehr_erfahren">Sehr erfahren</option>
+            </select>
+        </label>
+        <label>Vorhandene Anlagen
+            <input name="vorhandene_anlagen" type="text" placeholder="z. B. keine / ETF-Depot 10k">
+        </label>
+        <label>Depot vorhanden?
+            <select name="depot_vorhanden">
+                <option value="">– bitte wählen –</option>
+                <option value="true">Ja</option>
+                <option value="false">Nein</option>
+            </select>
+        </label>
+        <label>Monatliche Sparrate (EUR)
+            <input name="monatliche_sparrate_eur" type="number" min="0" step="1">
+        </label>
+        <label>Einmalbetrag (EUR)
+            <input name="einmalbetrag_eur" type="number" min="0" step="1">
+        </label>
+        <label>Schulden
+            <input name="schulden" type="text" placeholder="z. B. keine">
+        </label>
+        <label>Konsumschulden vorhanden?
+            <select name="hat_konsumschulden">
+                <option value="">– bitte wählen –</option>
+                <option value="true">Ja</option>
+                <option value="false">Nein</option>
+            </select>
+        </label>
+        <label>Notgroschen (Monatsausgaben)
+            <input name="notgroschen_monatsausgaben" type="number" min="0" step="1">
+        </label>
+        <div class="advisor-form-actions">
+            <button type="submit">Profil übernehmen &amp; Beratung starten</button>
+            <button type="button" id="advisor-skip-form">Ohne Formular direkt im Chat starten</button>
+        </div>
+    </form>
+</div>
+
 <script>
 (function () {
     const originalFetch = window.fetch;
+    const STORAGE_KEY = 'advisor-conversation-started';
+    let currentChatId = 'default';
+    let lastUsedModel = null;
+    let modelCount = null;
+    let pendingProfile = null;
+
+    // ---- Status-Pille ---------------------------------------------------
+    function setStatus(state, text) {
+        const pill = document.getElementById('advisor-status-pill');
+        if (!pill) return;
+        pill.dataset.state = state;
+        document.getElementById('advisor-status-text').textContent = text;
+    }
+
+    // ---- Fehler-Banner ----------------------------------------------------
     function showError(message) {
         const banner = document.getElementById('advisor-error-banner');
         const text = document.getElementById('advisor-error-banner-text');
         if (!banner || !text) return;
         text.textContent = message;
         banner.style.display = 'block';
+        setStatus('error', 'Fehler');
+        setTimeout(function () { setStatus('idle', 'Verbunden'); }, 8000);
     }
+
+    function highlightModelSelector() {
+        const candidate = document.querySelector(
+            '[data-testid*="model" i], select, [role="combobox"], button[aria-haspopup="listbox"]'
+        );
+        if (candidate) {
+            candidate.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            const prevOutline = candidate.style.outline;
+            candidate.style.outline = '2px solid #3b82f6';
+            setTimeout(function () { candidate.style.outline = prevOutline; }, 2500);
+        } else {
+            showError('Modell-Auswahl nicht gefunden – bitte oben in der Chat-UI prüfen, ob ein anderes Modell verfügbar ist.');
+        }
+    }
+
+    // ---- Eingabehinweis (Platzhaltertext) ---------------------------------
+    let hintApplied = false;
+    function applyInputHint() {
+        if (hintApplied) return;
+        const ta = document.querySelector('textarea');
+        if (ta) {
+            ta.placeholder = 'z. B. "500 € monatlich" oder "10.000 € Einmalbetrag"';
+            hintApplied = true;
+        }
+    }
+    setInterval(applyInputHint, 1000);
+
+    // ---- Leerzustand / Schnellwahl -----------------------------------------
+    function hideEmptyOverlay() {
+        const overlay = document.getElementById('advisor-empty-overlay');
+        if (overlay) overlay.classList.add('advisor-hidden');
+        try { localStorage.setItem(STORAGE_KEY, '1'); } catch (e) {}
+    }
+    if (localStorage.getItem(STORAGE_KEY)) hideEmptyOverlay();
+
+    function setNativeValue(el, value) {
+        const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
+        const setter = Object.getOwnPropertyDescriptor(proto, 'value').set;
+        setter.call(el, value);
+        el.dispatchEvent(new Event('input', { bubbles: true }));
+        el.dispatchEvent(new Event('change', { bubbles: true }));
+    }
+
+    function fillAndSubmit(text) {
+        const ta = document.querySelector('textarea');
+        if (!ta) return;
+        ta.focus();
+        setNativeValue(ta, text);
+        setTimeout(function () {
+            const form = ta.closest('form');
+            if (form && form.requestSubmit) {
+                try { form.requestSubmit(); return; } catch (e) {}
+            }
+            ta.dispatchEvent(new KeyboardEvent('keydown', {
+                key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
+            }));
+        }, 50);
+    }
+
+    // Zahlen-/Bool-Felder passend zum UserProfile-Schema konvertieren (siehe profile.py);
+    // Freitext-Felder unverändert, leere Felder werden weggelassen (nur Angegebenes senden).
+    const NUMMERN_FELDER = ['zeithorizont_jahre', 'alter', 'monatliche_sparrate_eur', 'einmalbetrag_eur', 'notgroschen_monatsausgaben'];
+    const BOOL_FELDER = ['depot_vorhanden', 'hat_konsumschulden'];
+
+    function serializeProfileForm(form) {
+        const daten = {};
+        new FormData(form).forEach(function (wert, feld) {
+            if (wert === '') return;
+            if (NUMMERN_FELDER.indexOf(feld) !== -1) daten[feld] = Number(wert);
+            else if (BOOL_FELDER.indexOf(feld) !== -1) daten[feld] = wert === 'true';
+            else daten[feld] = wert;
+        });
+        return daten;
+    }
+
+    const profileForm = document.getElementById('advisor-profile-form');
+    profileForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        const daten = serializeProfileForm(profileForm);
+        hideEmptyOverlay();
+        if (Object.keys(daten).length === 0) {
+            fillAndSubmit('Hallo, ich möchte eine Anlageberatung starten.');
+            return;
+        }
+        // Wird erst nach dem Absenden an /api/profile/{chat_id} übertragen, sobald die
+        // eigentliche Chat-Anfrage die echte Konversations-ID preisgibt (siehe Fetch-Interception).
+        pendingProfile = daten;
+        fillAndSubmit('Ich habe meine Eckdaten gerade im Formular eingetragen. Bitte geh kurz die verbleibenden Punkte durch und mach dann mit der Beratung weiter.');
+    });
+    document.getElementById('advisor-skip-form').addEventListener('click', function () {
+        hideEmptyOverlay();
+    });
+    document.querySelector('#advisor-empty-overlay .advisor-close').addEventListener('click', hideEmptyOverlay);
+    document.getElementById('advisor-error-model-hint').addEventListener('click', highlightModelSelector);
+
+    // ---- Beratungsstatus-Panel ---------------------------------------------
+    const PHASEN = [
+        { key: 'profil', label: 'Profil' },
+        { key: 'risiko', label: 'Risiko' },
+        { key: 'strategie', label: 'Strategie' },
+        { key: 'abgeschlossen', label: 'Ergebnis' },
+    ];
+
+    function esc(v) {
+        return String(v).replace(/[&<>"']/g, function (c) {
+            return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c];
+        });
+    }
+
+    function renderStepper(phase) {
+        const idx = PHASEN.findIndex(function (p) { return p.key === phase; });
+        return PHASEN.map(function (p, i) {
+            const state = i < idx ? 'done' : (i === idx ? 'active' : 'todo');
+            return '<div class="advisor-step advisor-step-' + state + '"><span></span>' + p.label + '</div>';
+        }).join('');
+    }
+
+    function renderCards(state) {
+        const parts = [];
+        const fp = state.profilFortschritt || { erfasst: 0, gesamt: 0 };
+        const pct = fp.gesamt ? Math.round((fp.erfasst / fp.gesamt) * 100) : 0;
+        const profilZeilen = Object.entries(state.profil || {}).map(function (kv) {
+            return '<div class="advisor-kv"><span>' + esc(kv[0]) + '</span><b>' + esc(kv[1]) + '</b></div>';
+        }).join('');
+        parts.push(
+            '<div class="advisor-card"><h4>Profil</h4>' +
+            '<div class="advisor-bar"><div class="advisor-bar-fill" style="width:' + pct + '%"></div></div>' +
+            '<div class="advisor-kv"><span>Fortschritt</span><b>' + fp.erfasst + ' / ' + fp.gesamt + '</b></div>' +
+            profilZeilen + '</div>'
+        );
+
+        if (state.risiko) {
+            const r = state.risiko;
+            parts.push(
+                '<div class="advisor-card"><h4>Risiko</h4>' +
+                '<div class="advisor-kv"><span>Risikoklasse</span><b>' + esc(r.risikoklasse) + ' – ' + esc(r.klassen_name) + '</b></div>' +
+                '<div class="advisor-kv"><span>Aktienquote empfohlen</span><b>' + Math.round((r.aktienquote_empfohlen || 0) * 100) + ' %</b></div>' +
+                '</div>'
+            );
+        }
+
+        if (state.strategie) {
+            const allokZeilen = Object.entries(state.strategie.allokation_prozent || {}).map(function (kv) {
+                return '<div class="advisor-kv"><span>' + esc(kv[0].replace(/_/g, ' ')) + '</span><b>' + esc(kv[1]) + ' %</b></div>';
+            }).join('');
+            parts.push('<div class="advisor-card"><h4>Strategie</h4>' + allokZeilen + '</div>');
+        }
+
+        if (state.umschichtungsplan && !state.umschichtungsplan.fehler) {
+            const u = state.umschichtungsplan;
+            parts.push(
+                '<div class="advisor-card"><h4>Umschichtungsplan</h4>' +
+                '<div class="advisor-kv"><span>Handelsvolumen</span><b>' + esc(u.handelsvolumen_eur) + ' €</b></div>' +
+                '<div class="advisor-kv"><span>Gebühren</span><b>' + esc(u.gebuehren_summe_eur) + ' €</b></div>' +
+                '<div class="advisor-kv"><span>Geschätzte Steuer</span><b>' + esc(u.geschaetzte_steuer_summe_eur) + ' €</b></div>' +
+                '</div>'
+            );
+        }
+
+        if (state.phase === 'abgeschlossen') {
+            parts.push(
+                '<div class="advisor-card advisor-card-export"><h4>Export</h4>' +
+                '<button id="advisor-export-md">Als Markdown herunterladen</button>' +
+                '<button id="advisor-export-pdf">Als PDF speichern</button>' +
+                '</div>'
+            );
+        }
+        return parts.join('');
+    }
+
+    function renderFooterInfo() {
+        const footer = document.getElementById('advisor-footer-info');
+        if (!footer) return;
+        const modellZeile = lastUsedModel ? ('Modell: ' + lastUsedModel) : 'Modell: Server-Standard';
+        const anzahlZeile = (modelCount != null) ? (modelCount + ' Modell(e) verfügbar') : '';
+        footer.textContent = [modellZeile, anzahlZeile].filter(Boolean).join(' · ');
+    }
+
+    async function refreshStatePanel() {
+        try {
+            const res = await originalFetch('/api/state/' + encodeURIComponent(currentChatId));
+            if (!res.ok) return;
+            const state = await res.json();
+            document.getElementById('advisor-stepper').innerHTML = renderStepper(state.phase);
+            document.getElementById('advisor-cards').innerHTML = renderCards(state);
+            renderFooterInfo();
+
+            const exportMd = document.getElementById('advisor-export-md');
+            if (exportMd) exportMd.addEventListener('click', function () {
+                const a = document.createElement('a');
+                a.href = '/api/export/' + encodeURIComponent(currentChatId);
+                a.download = 'beratung.md';
+                document.body.appendChild(a);
+                a.click();
+                a.remove();
+            });
+            const exportPdf = document.getElementById('advisor-export-pdf');
+            if (exportPdf) exportPdf.addEventListener('click', function () {
+                window.open('/api/export/' + encodeURIComponent(currentChatId) + '?format=html', '_blank');
+            });
+        } catch (e) {}
+    }
+
+    const tab = document.getElementById('advisor-panel-tab');
+    const panel = document.getElementById('advisor-panel');
+    tab.addEventListener('click', function () {
+        panel.classList.add('advisor-open');
+        refreshStatePanel();
+    });
+    document.getElementById('advisor-panel-close').addEventListener('click', function () {
+        panel.classList.remove('advisor-open');
+    });
+
+    originalFetch('/api/configure').then(function (r) { return r.json(); }).then(function (cfg) {
+        modelCount = (cfg.models || []).length;
+        setStatus('idle', 'Verbunden');
+        renderFooterInfo();
+    }).catch(function () { setStatus('idle', 'Verbunden'); });
+
+    // ---- Fetch-Interception: Chat-ID, Status, Fehler, Panel-Refresh -------
     window.fetch = async function (...args) {
+        const request = args[0];
+        const init = args[1] || {};
+        const url = typeof request === 'string' ? request : (request && request.url) || '';
+        const isChat = url.includes('/api/chat');
+
+        if (isChat) {
+            try {
+                const bodyText = typeof init.body === 'string' ? init.body : null;
+                if (bodyText) {
+                    const parsed = JSON.parse(bodyText);
+                    if (parsed && parsed.id) currentChatId = parsed.id;
+                    if (parsed && parsed.model) lastUsedModel = parsed.model;
+                }
+            } catch (e) {}
+            if (pendingProfile) {
+                const formData = pendingProfile;
+                pendingProfile = null;
+                try {
+                    await originalFetch('/api/profile/' + encodeURIComponent(currentChatId), {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(formData),
+                    });
+                } catch (e) {}
+            }
+            hideEmptyOverlay();
+            setStatus('working', 'Arbeitet…');
+        }
+
         try {
             const response = await originalFetch.apply(this, args);
-            const request = args[0];
-            const url = typeof request === 'string' ? request : request && request.url ? request.url : '';
-            if (url.includes('/api/chat') && !response.ok) {
-                const clone = response.clone();
-                let message = `Fehler ${response.status}`;
-                try {
-                    const payload = await clone.json();
-                    message = payload.error || payload.detail || message;
-                } catch (error) {
+            if (isChat) {
+                if (!response.ok) {
+                    const clone = response.clone();
+                    let message = `Fehler ${response.status}`;
                     try {
-                        message = await clone.text();
-                    } catch (_) {}
+                        const payload = await clone.json();
+                        message = payload.error || payload.detail || message;
+                    } catch (error) {
+                        try { message = await clone.text(); } catch (_) {}
+                    }
+                    showError(message);
+                } else {
+                    setStatus('idle', 'Verbunden');
+                    // Antwort-Stream im Hintergrund mitlesen (eigene Kopie, stört
+                    // die App nicht), um nach Abschluss den Status zu aktualisieren.
+                    response.clone().body?.getReader && (async function () {
+                        try {
+                            const reader = response.clone().body.getReader();
+                            while (true) {
+                                const chunk = await reader.read();
+                                if (chunk.done) break;
+                            }
+                        } catch (e) {}
+                        refreshStatePanel();
+                    })();
                 }
-                showError(message);
             }
             return response;
         } catch (error) {
-            showError('Netzwerkfehler oder Modell-Endpoint nicht erreichbar.');
+            if (isChat) showError('Netzwerkfehler oder Modell-Endpoint nicht erreichbar.');
             throw error;
         }
     };
@@ -149,10 +763,10 @@ def _inject_error_overlay(html: str) -> str:
 </script>
 """
 
-        marker = "</body>"
-        if marker not in html:
-                return html + overlay
-        return html.replace(marker, overlay + marker, 1)
+    marker = "</body>"
+    if marker not in html:
+        return html + overlay
+    return html.replace(marker, overlay + marker, 1)
 
 
 def create_app(
@@ -180,8 +794,8 @@ def create_app(
         model_infos.append(_ModelInfo(id=model_id, name=label or model.label))
 
     async def index(request: Request) -> Response:
-        content = await _get_ui_html(None)
-        content = _inject_error_overlay(content)
+        content = (await _get_ui_html(None)).decode("utf-8")
+        content = _inject_ui_enhancements(content)
         return HTMLResponse(content=content, headers={"Cache-Control": "public, max-age=3600"})
 
     async def configure_frontend(request: Request) -> Response:
@@ -194,6 +808,44 @@ def create_app(
 
     async def health(request: Request) -> Response:
         return JSONResponse({"ok": True, "sessions": len(sessions)})
+
+    async def get_state(request: Request) -> Response:
+        deps = sessions.get(request.path_params["chat_id"])
+        return JSONResponse(_session_state(deps))
+
+    async def post_profile(request: Request) -> Response:
+        """Übernimmt mehrere Profilfelder auf einmal (Formular der Web-UI, siehe
+        `_inject_ui_enhancements`); validiert wie `speichere_profil_mehrere` in
+        agent.py, aber ohne den Umweg über das LLM."""
+        deps = sessions.get(request.path_params["chat_id"])
+        try:
+            payload = await request.json()
+        except Exception:
+            return JSONResponse({"error": "Ungültiges JSON"}, status_code=400)
+        if not isinstance(payload, dict):
+            return JSONResponse({"error": "Erwarte ein JSON-Objekt mit Profilfeldern"}, status_code=400)
+
+        payload.pop("risikoklasse", None)  # wird berechnet, nie vom Client gesetzt
+        daten = deps.profile.model_dump()
+        daten.update(payload)
+        try:
+            deps.profile = UserProfile.model_validate(daten)
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"error": f"Ungültige Profildaten: {e}"}, status_code=400)
+
+        return JSONResponse(_session_state(deps))
+
+    async def get_export(request: Request) -> Response:
+        chat_id = request.path_params["chat_id"]
+        deps = sessions.get(chat_id)
+        markdown = _export_markdown(deps)
+        if request.query_params.get("format") == "html":
+            return HTMLResponse(_export_print_html(markdown))
+        return PlainTextResponse(
+            markdown,
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": f'attachment; filename="beratung-{chat_id}.md"'},
+        )
 
     async def options_chat(request: Request) -> Response:
         return Response()
@@ -281,6 +933,9 @@ def create_app(
             Route("/chat", post_chat, methods=["POST"]),
             Route("/configure", configure_frontend, methods=["GET"]),
             Route("/health", health, methods=["GET"]),
+            Route("/state/{chat_id}", get_state, methods=["GET"]),
+            Route("/export/{chat_id}", get_export, methods=["GET"]),
+            Route("/profile/{chat_id}", post_profile, methods=["POST"]),
         ]
     )
 
