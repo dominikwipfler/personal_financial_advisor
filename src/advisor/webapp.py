@@ -324,45 +324,59 @@ def _inject_ui_enhancements(html: str) -> str:
 }
 #advisor-footer-info { margin-top: 6px; font-size: 11px; opacity: 0.6; }
 
+/* Farben/Radius werden von der echten Chat-UI übernommen (dieselben CSS-Variablen,
+   von ihr auf :root/.dark gesetzt) statt eigener Werte zu raten – dadurch passt sich
+   die Maske automatisch an Light/Dark-Umschaltung *innerhalb* der Chat-UI an, nicht
+   nur an die Betriebssystem-Einstellung. Position/Breite werden per JS (siehe
+   positionEmptyOverlay) auf die tatsächliche Chat-Spalte ausgerichtet, damit die
+   Maske wie ein Teil davon wirkt statt lose darüber zu schweben. */
 #advisor-empty-overlay {
-    position: fixed; top: 48px; left: 50%; transform: translateX(-50%);
+    position: fixed; top: 64px; left: 50%; transform: translateX(-50%);
     z-index: 9989; width: min(640px, calc(100vw - 32px));
-    max-height: calc(100vh - 96px); overflow-y: auto;
-    background: rgba(255,255,255,0.98); color: #111827;
-    border: 1px solid rgba(120,120,120,0.2); border-radius: 14px;
-    box-shadow: 0 12px 32px rgba(0,0,0,0.16); padding: 18px 20px;
+    max-height: calc(100vh - 140px); overflow-y: auto;
+    background: var(--popover, #fff); color: var(--popover-foreground, #111827);
+    border: 1px solid var(--border, rgba(120,120,120,0.2));
+    border-radius: var(--radius, 10px);
+    box-shadow: 0 4px 16px rgba(0,0,0,0.08); padding: 18px 20px;
     font: 14px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
 }
-@media (prefers-color-scheme: dark) {
-    #advisor-empty-overlay { background: rgba(23,24,28,0.98); color: #e5e7eb; }
-}
-#advisor-empty-overlay.advisor-hidden { display: none; }
-#advisor-empty-overlay h2 { margin: 0 0 6px; font-size: 17px; }
-#advisor-empty-overlay p { margin: 0 0 12px; opacity: 0.75; }
+.advisor-hidden { display: none !important; }
+#advisor-empty-overlay h2 { grid-column: 1 / -1; margin: 0 0 6px; font-size: 17px; }
+#advisor-empty-overlay p { grid-column: 1 / -1; margin: 0 0 12px; opacity: 0.75; }
 #advisor-empty-overlay .advisor-hint { font-size: 12px; opacity: 0.6; margin-top: 8px; }
 #advisor-empty-overlay .advisor-close {
     position: absolute; top: 10px; right: 12px; background: none; border: 0;
     cursor: pointer; font-size: 15px; color: inherit; opacity: 0.6;
 }
-#advisor-profile-form {
+#advisor-step-1 {
     display: grid; grid-template-columns: 1fr 1fr; gap: 4px 14px; margin-top: 4px;
 }
-#advisor-profile-form label {
+#advisor-step-1 label {
     display: flex; flex-direction: column; gap: 3px; font-size: 12px; opacity: 0.85; margin-bottom: 8px;
 }
 #advisor-profile-form input, #advisor-profile-form select {
-    font: inherit; font-size: 13px; padding: 7px 8px; border-radius: 8px;
-    border: 1px solid rgba(120,120,120,0.35); background: transparent; color: inherit;
+    font: inherit; font-size: 13px; padding: 7px 8px; border-radius: calc(var(--radius, 8px) - 2px);
+    border: 1px solid var(--input, rgba(120,120,120,0.35)); background: transparent; color: inherit;
+}
+#advisor-profile-form input[type="range"] {
+    width: 100%; padding: 0; border: 0; background: transparent; accent-color: var(--primary, #3b82f6); cursor: pointer;
 }
 #advisor-profile-form .advisor-form-actions { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; margin-top: 4px; }
-#advisor-profile-form button[type="submit"] {
-    padding: 9px 16px; border-radius: 8px; border: 0; cursor: pointer; font: inherit; font-weight: 600;
-    background: #3b82f6; color: #fff;
+#advisor-profile-form .advisor-primary-btn {
+    padding: 9px 16px; border-radius: calc(var(--radius, 8px) - 2px); border: 0; cursor: pointer; font: inherit; font-weight: 600;
+    background: var(--primary, #3b82f6); color: var(--primary-foreground, #fff);
 }
-#advisor-profile-form button[type="submit"]:hover { background: #2563eb; }
-#advisor-skip-form {
-    background: none; border: 0; color: inherit; opacity: 0.65; cursor: pointer; font: inherit; text-decoration: underline;
+#advisor-profile-form .advisor-primary-btn:hover { filter: brightness(0.92); }
+#advisor-profile-form .advisor-skip-link {
+    background: none; border: 0; color: var(--muted-foreground, inherit); opacity: 0.85; cursor: pointer; font: inherit; text-decoration: underline;
 }
+#advisor-step-2 { margin-top: 4px; }
+#advisor-step-2 p { margin-bottom: 16px; }
+.advisor-slider-field { margin: 0 0 18px; }
+.advisor-slider-field label { display: block; font-size: 13px; margin-bottom: 8px; }
+.advisor-slider-scale { display: flex; justify-content: space-between; font-size: 11px; opacity: 0.55; margin-top: 2px; }
+.advisor-slider-value { margin-top: 6px; font-size: 13px; font-weight: 600; min-height: 18px; }
+.advisor-slider-value.advisor-slider-untouched { font-weight: 400; opacity: 0.55; font-style: italic; }
 </style>
 
 <div id="advisor-status-pill" data-state="loading"><span class="advisor-dot"></span><span id="advisor-status-text">Modell lädt…</span></div>
@@ -385,11 +399,12 @@ def _inject_ui_enhancements(html: str) -> str:
     <div id="advisor-footer-info"></div>
 </aside>
 
-<div id="advisor-empty-overlay">
+<div id="advisor-empty-overlay" class="advisor-hidden">
     <button class="advisor-close" aria-label="Schließen">×</button>
-    <h2>Willkommen 👋</h2>
-    <p>Trag hier kurz deine Eckdaten ein – die genauere Risikoeinschätzung (z. B. Reaktion auf Kursverluste) klärt der Chat direkt im Anschluss mit dir.</p>
     <form id="advisor-profile-form">
+      <div id="advisor-step-1">
+        <h2>Willkommen 👋</h2>
+        <p>Trag hier kurz deine Eckdaten ein – im nächsten Schritt fragen wir deine Risikoeinstellung per Regler ab; alles Weitere klärt der Chat direkt im Anschluss mit dir.</p>
         <label>Anlageziel
             <input name="anlageziel" type="text" placeholder="z. B. Altersvorsorge, Vermögensaufbau">
         </label>
@@ -441,20 +456,53 @@ def _inject_ui_enhancements(html: str) -> str:
             <input name="notgroschen_monatsausgaben" type="number" min="0" step="1">
         </label>
         <div class="advisor-form-actions">
-            <button type="submit">Profil übernehmen &amp; Beratung starten</button>
-            <button type="button" id="advisor-skip-form">Ohne Formular direkt im Chat starten</button>
+            <button type="submit" class="advisor-primary-btn">Weiter</button>
+            <button type="button" id="advisor-skip-form" class="advisor-skip-link">Ohne Formular direkt im Chat starten</button>
         </div>
+      </div>
+
+      <div id="advisor-step-2" class="advisor-hidden">
+        <h2>Risikoeinschätzung</h2>
+        <p>Stell dir vor, dein Depot verliert innerhalb weniger Monate 20 % an Wert – 10.000 € wären dann noch 8.000 €. Positioniere dich mit den Reglern; nicht bewegte Regler beantwortet der Chat im Anschluss mit dir.</p>
+
+        <div class="advisor-slider-field">
+            <label for="advisor-slider-reaktion">Wie würdest du reagieren?</label>
+            <input type="range" id="advisor-slider-reaktion" min="0" max="4" step="1" value="2">
+            <div class="advisor-slider-scale"><span>Alles verkaufen</span><span>Nachkaufen</span></div>
+            <div class="advisor-slider-value advisor-slider-untouched" id="advisor-slider-reaktion-label">Noch nicht ausgewählt</div>
+        </div>
+
+        <div class="advisor-slider-field">
+            <label for="advisor-slider-verlust">Welchen zwischenzeitlichen Wertverlust könntest du emotional noch aushalten?</label>
+            <input type="range" id="advisor-slider-verlust" min="0" max="80" step="5" value="20">
+            <div class="advisor-slider-value advisor-slider-untouched" id="advisor-slider-verlust-label">Noch nicht ausgewählt</div>
+        </div>
+
+        <input type="hidden" name="reaktion_kursverlust_20_prozent" id="advisor-hidden-reaktion" value="">
+        <input type="hidden" name="max_akzeptierter_verlust_prozent" id="advisor-hidden-verlust" value="">
+
+        <div class="advisor-form-actions">
+            <button type="button" id="advisor-step2-submit" class="advisor-primary-btn">Beratung starten</button>
+            <button type="button" id="advisor-step2-back" class="advisor-skip-link">Zurück</button>
+            <button type="button" id="advisor-step2-skip" class="advisor-skip-link">Diese Fragen lieber im Chat beantworten</button>
+        </div>
+      </div>
     </form>
 </div>
 
 <script>
 (function () {
     const originalFetch = window.fetch;
-    const STORAGE_KEY = 'advisor-conversation-started';
     let currentChatId = 'default';
     let lastUsedModel = null;
     let modelCount = null;
     let pendingProfile = null;
+
+    // Chat-ID grob aus der URL raten (Client-Routing der Chat-UI nutzt /{id});
+    // wird beim ersten echten /api/chat-Request unten ohnehin durch die
+    // tatsächliche ID aus dem Request-Body überschrieben/bestätigt.
+    const pfadId = location.pathname.replace(/^\\/+/, '').trim();
+    if (pfadId) currentChatId = pfadId;
 
     // ---- Status-Pille ---------------------------------------------------
     function setStatus(state, text) {
@@ -505,9 +553,35 @@ def _inject_ui_enhancements(html: str) -> str:
     function hideEmptyOverlay() {
         const overlay = document.getElementById('advisor-empty-overlay');
         if (overlay) overlay.classList.add('advisor-hidden');
-        try { localStorage.setItem(STORAGE_KEY, '1'); } catch (e) {}
     }
-    if (localStorage.getItem(STORAGE_KEY)) hideEmptyOverlay();
+
+    // Die Maske startet server-seitig versteckt (siehe HTML) und wird nur
+    // eingeblendet, wenn die aktuelle Konversation laut Session-State noch
+    // kein Profil hat – so bleibt sie bei einem neuen Chat sichtbar, aber
+    // taucht bei einem bereits begonnenen Chat (z. B. nach Reload) nicht
+    // erneut über den vorhandenen Nachrichten auf. Ein globales
+    // "einmal gesehen, nie wieder"-Flag (z. B. via localStorage) würde hier
+    // fälschlich auch neue Chats unterdrücken, sobald irgendeine Konversation
+    // jemals begonnen wurde.
+    function zeigeEmptyOverlayFallsNeueKonversation() {
+        const overlay = document.getElementById('advisor-empty-overlay');
+        if (!overlay) return;
+        let entschieden = false;
+        function entscheide(zeigen) {
+            if (entschieden) return;
+            entschieden = true;
+            if (zeigen) overlay.classList.remove('advisor-hidden');
+        }
+        setTimeout(function () { entscheide(true); }, 1500);
+        originalFetch('/api/state/' + encodeURIComponent(currentChatId))
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (state) {
+                const hatFortschritt = !!(state && state.profilFortschritt && state.profilFortschritt.erfasst > 0);
+                entscheide(!hatFortschritt);
+            })
+            .catch(function () { entscheide(true); });
+    }
+    zeigeEmptyOverlayFallsNeueKonversation();
 
     function setNativeValue(el, value) {
         const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
@@ -535,7 +609,7 @@ def _inject_ui_enhancements(html: str) -> str:
 
     // Zahlen-/Bool-Felder passend zum UserProfile-Schema konvertieren (siehe profile.py);
     // Freitext-Felder unverändert, leere Felder werden weggelassen (nur Angegebenes senden).
-    const NUMMERN_FELDER = ['zeithorizont_jahre', 'alter', 'monatliche_sparrate_eur', 'einmalbetrag_eur', 'notgroschen_monatsausgaben'];
+    const NUMMERN_FELDER = ['zeithorizont_jahre', 'alter', 'monatliche_sparrate_eur', 'einmalbetrag_eur', 'notgroschen_monatsausgaben', 'max_akzeptierter_verlust_prozent'];
     const BOOL_FELDER = ['depot_vorhanden', 'hat_konsumschulden'];
 
     function serializeProfileForm(form) {
@@ -550,8 +624,22 @@ def _inject_ui_enhancements(html: str) -> str:
     }
 
     const profileForm = document.getElementById('advisor-profile-form');
+    const step1El = document.getElementById('advisor-step-1');
+    const step2El = document.getElementById('advisor-step-2');
+    function goToStep2() { step1El.classList.add('advisor-hidden'); step2El.classList.remove('advisor-hidden'); }
+    function goToStep1() { step2El.classList.add('advisor-hidden'); step1El.classList.remove('advisor-hidden'); }
+
+    // Schritt 1 -> Schritt 2 (noch kein Absenden an den Chat).
     profileForm.addEventListener('submit', function (e) {
         e.preventDefault();
+        goToStep2();
+    });
+
+    function finalizeAndSend() {
+        // Die zwei Risiko-Felder kommen über die verborgenen Inputs der Slider mit
+        // (siehe unten) und landen dadurch automatisch mit im selben FormData-Pass;
+        // ein unberührter Slider hinterlässt dort einen leeren Wert und wird von
+        // serializeProfileForm() genau wie jedes andere leere Feld übersprungen.
         const daten = serializeProfileForm(profileForm);
         hideEmptyOverlay();
         if (Object.keys(daten).length === 0) {
@@ -561,8 +649,51 @@ def _inject_ui_enhancements(html: str) -> str:
         // Wird erst nach dem Absenden an /api/profile/{chat_id} übertragen, sobald die
         // eigentliche Chat-Anfrage die echte Konversations-ID preisgibt (siehe Fetch-Interception).
         pendingProfile = daten;
-        fillAndSubmit('Ich habe meine Eckdaten gerade im Formular eingetragen. Bitte geh kurz die verbleibenden Punkte durch und mach dann mit der Beratung weiter.');
+        const hatRisikoAntwort = ('reaktion_kursverlust_20_prozent' in daten) || ('max_akzeptierter_verlust_prozent' in daten);
+        const text = hatRisikoAntwort
+            ? 'Ich habe meine Eckdaten im Formular eingetragen und meine Risikoeinstellung per Regler angegeben. Bitte bestätige kurz meine Risikoeinschätzung bzw. frag gezielt nach, falls dir dazu noch etwas unklar ist, und mach dann mit der Beratung weiter.'
+            : 'Ich habe meine Eckdaten gerade im Formular eingetragen. Bitte geh kurz die verbleibenden Punkte durch und mach dann mit der Beratung weiter.';
+        fillAndSubmit(text);
+    }
+
+    // ---- Risiko-Slider (Schritt 2) -----------------------------------------
+    // Reihenfolge/Werte exakt wie ReaktionKursverlust in profile.py und die
+    // Punktetabelle in risk.py::_score_risikobereitschaft.
+    const REAKTION_OPTIONEN = [
+        { wert: 'alles_verkaufen', label: 'Alles verkaufen' },
+        { wert: 'teilweise_verkaufen', label: 'Einen Teil verkaufen' },
+        { wert: 'beunruhigt_halten', label: 'Beunruhigt halten' },
+        { wert: 'gelassen_halten', label: 'Gelassen halten' },
+        { wert: 'nachkaufen', label: 'Nachkaufen' },
+    ];
+    const reaktionSlider = document.getElementById('advisor-slider-reaktion');
+    const reaktionHidden = document.getElementById('advisor-hidden-reaktion');
+    const reaktionLabel = document.getElementById('advisor-slider-reaktion-label');
+    reaktionSlider.addEventListener('input', function () {
+        const opt = REAKTION_OPTIONEN[Number(reaktionSlider.value)];
+        reaktionHidden.value = opt.wert;
+        reaktionLabel.textContent = opt.label;
+        reaktionLabel.classList.remove('advisor-slider-untouched');
     });
+
+    const verlustSlider = document.getElementById('advisor-slider-verlust');
+    const verlustHidden = document.getElementById('advisor-hidden-verlust');
+    const verlustLabel = document.getElementById('advisor-slider-verlust-label');
+    verlustSlider.addEventListener('input', function () {
+        verlustHidden.value = verlustSlider.value;
+        verlustLabel.textContent = verlustSlider.value + ' %';
+        verlustLabel.classList.remove('advisor-slider-untouched');
+    });
+
+    document.getElementById('advisor-step2-submit').addEventListener('click', finalizeAndSend);
+    document.getElementById('advisor-step2-back').addEventListener('click', goToStep1);
+    document.getElementById('advisor-step2-skip').addEventListener('click', function () {
+        // Angefasste, aber bewusst übersprungene Slider nicht mitsenden.
+        reaktionHidden.value = '';
+        verlustHidden.value = '';
+        finalizeAndSend();
+    });
+
     document.getElementById('advisor-skip-form').addEventListener('click', function () {
         hideEmptyOverlay();
     });

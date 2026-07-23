@@ -163,6 +163,41 @@ def test_profile_endpunkt_uebernimmt_formular_felder_ohne_llm():
     assert deps.profile.monatliche_sparrate_eur == 250
 
 
+def test_profile_endpunkt_uebernimmt_risiko_slider_felder():
+    """Die beiden Slider-Felder aus Schritt 2 des Willkommens-Formulars werden
+    genauso wie die übrigen Formularfelder validiert und übernommen."""
+    app = create_app(agent)
+    client = TestClient(app)
+
+    r = client.post(
+        "/api/profile/chat-slider",
+        json={
+            "anlageziel": "Altersvorsorge",
+            "reaktion_kursverlust_20_prozent": "gelassen_halten",
+            "max_akzeptierter_verlust_prozent": 25,
+        },
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["profil"]["Reaktion auf −20 % Kursverlust"] == "gelassen_halten"
+    assert body["profil"]["Max. akzeptierter Verlust (%)"] == 25
+
+    sessions: SessionStore = app.state.sessions
+    deps = sessions.get("chat-slider")
+    assert deps.profile.reaktion_kursverlust_20_prozent == "gelassen_halten"
+    assert deps.profile.max_akzeptierter_verlust_prozent == 25
+
+
+def test_profile_endpunkt_lehnt_ungueltige_reaktion_ab():
+    app = create_app(agent)
+    client = TestClient(app)
+    r = client.post(
+        "/api/profile/chat-invalid-reaktion",
+        json={"reaktion_kursverlust_20_prozent": "panik"},
+    )
+    assert r.status_code == 400
+
+
 def test_profile_endpunkt_ignoriert_client_seitige_risikoklasse():
     app = create_app(agent)
     client = TestClient(app)
