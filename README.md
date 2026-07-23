@@ -231,6 +231,19 @@ berechnet. „Fang bitte von vorn an“ setzt das Profil zurück.
 Tipp: Die Tool-Aufrufe (Profil speichern, Recherche, Strategie-Berechnung)
 sind in der Chat-UI einsehbar – nützlich zum Nachvollziehen der Beratung.
 
+### Troubleshooting bei Modellfehlern
+
+- **401 `Missing Authentication header`**: Der API-Key oder die Provider-URL ist falsch. Prüfe `OPENAI_API_KEY` / `LITELLM_API_KEY` und die passende `OPENAI_BASE_URL` bzw. `LITELLM_SERVER_URL`.
+- **400 `BadRequestError`**: Die Modellanfrage war nicht kompatibel mit dem Provider oder Modell. Häufig hilft ein anderes Modell bzw. eine klarere Eingabe.
+- **Timeouts / 502 / 503 / 504**: Provider war kurz nicht erreichbar oder zu langsam. Der Server versucht automatisch mehrere Male erneut; bei wiederholtem Fehler erneut versuchen.
+- **UI-Meldung**: Fehler werden in der Chat-UI als Banner eingeblendet, statt nur im Server-Log zu landen.
+
+Wenn du andere Modelle testest, lohnt sich ein kurzes Ping-Testing vor dem produktiven Einsatz:
+
+```bash
+curl -i http://localhost:8000/api/health
+```
+
 ## Fachliche Grundlagen aus den Vorlesungsunterlagen
 
 Die Beratungslogik setzt Prinzipien aus dem Finanzmanagement-Skript von
