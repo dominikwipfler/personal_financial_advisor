@@ -181,6 +181,27 @@ Projektverzeichnis an (SQLite, Nutzerprofile pro Konversation – überlebt
 Server-Neustarts). Kein manueller Schritt nötig; Pfad optional über
 `ADVISOR_DB_PATH` in der `.env` änderbar.
 
+### Tests und Qualitätssicherung
+
+```bash
+uv run pytest                      # 65 Tests, laufen OHNE API-Key
+uv run --group dev ty check src/   # statische Typprüfung
+```
+
+Die Testsuite läuft vollständig ohne LLM-Zugang: Die Fachlogik ist
+deterministisch, und der Agenten-Ablauf wird mit dem `FunctionModel` von
+Pydantic AI simuliert (ein Skript-Modell, das vorgegebene Tool-Aufrufe
+zurückgibt). Dadurch sind auch Tool-Verkettung und Session-State testbar,
+ohne API-Kosten zu verursachen.
+
+| Testdatei | Tests | Prüft |
+|---|---|---|
+| `tests/test_risk_strategy.py` | 9 | Risikoprofilierung und Allokation: Monotonie der Aktienquote, Vorsichtsprinzip, Kappungen, Summenkonsistenz, keine negativen Anteile, Ableitung der Konsumschulden |
+| `tests/test_rebalancing.py` | 9 | Umschichtung: „neues Geld zuerst", Handels-Schwellen, Gebühren, Steuerschätzung mit Teilfreistellung, Verlustverrechnung, Schutz von Fremdpositionen |
+| `tests/test_profil_normalisierung.py` | 26 | Tolerante Verarbeitung freier Formulierungen („Anfänger/Grundkenntnisse", „würde abwarten", „ja"/„nein") |
+| `tests/test_webapp.py` | 19 | Web-Schicht: Profil pro Konversation, SQLite-Persistenz, Status-/Export-/Formular-Endpunkte, Bereinigung des Export-Dateinamens, HTML-Escaping |
+| `tests/test_agent_flow.py` | 2 | Kompletter Beratungs-Tool-Loop und Verweigerung der Strategie bei unvollständigem Profil |
+
 ### Nutzung mit dem HKA-LLM-Server (empfohlen)
 
 Der HKA-Server <https://llm.hka-cloud.de> ist ein LiteLLM-Proxy und wird vom

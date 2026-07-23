@@ -75,6 +75,11 @@ er endet bewusst bei der Strategie und deren Begründung.
   System-Prompt. Kleine Modelle können Phasen überspringen; das Zahlenwerk
   bleibt dank Tool-Berechnung trotzdem konsistent, und die Tools verweigern
   die Strategie, solange das Profil unvollständig ist.
-- **Keine automatisierten Tests der Dialogführung:** Die Fachlogik
-  (risk/strategy) ist deterministisch und manuell verifiziert; LLM-Dialoge
-  sind nicht CI-testbar ohne API-Kosten.
+- **Dialogqualität selbst ist nicht automatisiert testbar:** Fachlogik,
+  Tool-Verkettung und Web-Schicht sind mit 65 Tests abgedeckt (der
+  Agenten-Ablauf über das `FunctionModel` von Pydantic AI, also ohne
+  API-Kosten). Nicht testbar bleibt, wie *gut* ein echtes Sprachmodell den
+  Dialog führt – ob es die Phasen einhält, sinnvoll nachfragt und die
+  Recherche gründlich durchführt. Das wurde manuell gegen den HKA-Server
+  geprüft und über den dokumentierten Modell-Benchmark abgesichert, ist aber
+  modellabhängig und nicht reproduzierbar automatisierbar.
