@@ -7,15 +7,24 @@ os.environ.setdefault("OPENAI_API_KEY", "dummy-key-fuer-tests")
 import json
 from collections.abc import AsyncIterator
 
+import pytest
 from pydantic_ai.messages import ModelMessage
 from pydantic_ai.models.function import AgentInfo, DeltaToolCall, DeltaToolCalls, FunctionModel
 from starlette.testclient import TestClient
 
+import advisor.webapp as webapp
 from advisor.agent import agent
 from advisor.profile import AdvisorDeps, UserProfile
 from advisor.risk import ermittle_risikoprofil
 from advisor.strategy import erstelle_strategie
 from advisor.webapp import SessionStore, _export_markdown, _session_state, create_app
+
+
+@pytest.fixture(autouse=True)
+def _isolierte_sqlite_datei(tmp_path, monkeypatch):
+    """Jeder Test bekommt eine eigene, temporäre SQLite-Datei statt der echten
+    `advisor_sessions.db` im Projektverzeichnis (siehe SessionStore/DB_PATH)."""
+    monkeypatch.setattr(webapp, "DB_PATH", str(tmp_path / "test_sessions.db"))
 
 
 def test_session_store_trennt_und_verdraengt():
@@ -27,6 +36,30 @@ def test_session_store_trennt_und_verdraengt():
     store.get("chat-c")  # verdrängt die älteste Sitzung (chat-b)
     assert len(store) == 2
     assert store.get("chat-b") is not b  # neu angelegt
+
+
+def test_session_store_uebersteht_sqlite_ueber_neue_instanz(tmp_path):
+    """Eine zweite SessionStore-Instanz auf derselben Datei simuliert einen
+    Server-Neustart: der In-Memory-Cache ist leer, die Daten müssen aus SQLite
+    kommen."""
+    db_path = str(tmp_path / "persist.db")
+
+    store1 = SessionStore(db_path=db_path)
+    deps = store1.get("chat-restart")
+    deps.profile = deps.profile.model_copy(update={"anlageziel": "Altersvorsorge", "alter": 42})
+    store1.speichere("chat-restart")
+
+    store2 = SessionStore(db_path=db_path)  # frischer In-Memory-Cache, gleiche Datei
+    geladen = store2.get("chat-restart")
+    assert geladen is not deps
+    assert geladen.profile.anlageziel == "Altersvorsorge"
+    assert geladen.profile.alter == 42
+
+
+def test_session_store_speichert_ohne_vorherigen_get_nichts():
+    """`speichere()` für eine nie geladene Chat-ID ist ein No-Op (kein Fehler)."""
+    store = SessionStore()
+    store.speichere("nie-angefasst")  # darf nicht crashen
 
 
 def _chat_request(chat_id: str, text: str) -> dict:
@@ -136,6 +169,69 @@ def test_state_endpunkt_spiegelt_beratungsphase():
     assert state["phase"] == "abgeschlossen"
     assert "aktien_welt_industrielaender" in state["strategie"]["allokation_prozent"]
     assert abs(sum(state["strategie"]["allokation_prozent"].values()) - 100) < 0.2
+
+
+def test_state_endpunkt_liefert_risiko_verlauf_fuers_chart():
+    """Jede Risikoberechnung hängt einen Snapshot an risiko_verlauf an (Grundlage
+    für das Verlaufs-Chart im Beratungsstatus-Panel)."""
+    app = create_app(agent)
+    client = TestClient(app)
+    sessions: SessionStore = app.state.sessions
+    deps = sessions.get("chat-verlauf")
+    deps.profile = _vollstaendiges_profil()
+
+    assert client.get("/api/state/chat-verlauf").json()["risikoVerlauf"] == []
+
+    risiko = ermittle_risikoprofil(deps.profile)
+    deps.risiko_verlauf.append({"risikoklasse": risiko.risikoklasse, "aktienquote_empfohlen": risiko.aktienquote_empfohlen})
+    deps.risiko_verlauf.append({"risikoklasse": risiko.risikoklasse, "aktienquote_empfohlen": risiko.aktienquote_empfohlen})
+    verlauf = client.get("/api/state/chat-verlauf").json()["risikoVerlauf"]
+    assert len(verlauf) == 2
+    assert verlauf[0]["risikoklasse"] == risiko.risikoklasse
+
+    deps.reset()
+    assert client.get("/api/state/chat-verlauf").json()["risikoVerlauf"] == []
+
+
+def test_profil_uebersteht_simulierten_serverneustart_ueber_api():
+    """Zwei unabhängige `create_app`-Instanzen auf derselben (per Fixture
+    isolierten) DB_PATH simulieren einen Server-Neustart über die echten
+    HTTP-Endpunkte: Formular-Übernahme in "Prozess 1", Auslesen in "Prozess 2"."""
+    client1 = TestClient(create_app(agent))
+    r = client1.post(
+        "/api/profile/chat-neustart",
+        json={"anlageziel": "Altersvorsorge", "alter": 42},
+    )
+    assert r.status_code == 200
+
+    client2 = TestClient(create_app(agent))  # neue App = neuer In-Memory-Cache
+    state = client2.get("/api/state/chat-neustart").json()
+    assert state["profil"]["Anlageziel"] == "Altersvorsorge"
+    assert state["profil"]["Alter"] == 42
+
+
+def test_chat_tool_ergebnis_uebersteht_simulierten_serverneustart():
+    """Auch vom Agenten (Tool-Aufruf) gesetzte Profilfelder müssen nach dem
+    Chat-Request persistiert sein, nicht nur die Formular-Übernahme."""
+
+    async def skript(
+        messages: list[ModelMessage], info: AgentInfo
+    ) -> AsyncIterator[str | DeltaToolCalls]:
+        letzte = messages[-1]
+        kinds = {getattr(p, "part_kind", "") for p in getattr(letzte, "parts", [])}
+        if "tool-return" in kinds:
+            yield "OK"
+            return
+        yield {0: DeltaToolCall(name="speichere_profil", json_args=json.dumps({"feld": "alter", "wert": "34"}))}
+
+    client1 = TestClient(create_app(agent))
+    with agent.override(model=FunctionModel(stream_function=skript)):
+        r = client1.post("/api/chat", json=_chat_request("chat-tool-neustart", "Ich bin 34."))
+    assert r.status_code == 200
+
+    client2 = TestClient(create_app(agent))
+    state = client2.get("/api/state/chat-tool-neustart").json()
+    assert state["profil"]["Alter"] == 34
 
 
 def test_profile_endpunkt_uebernimmt_formular_felder_ohne_llm():

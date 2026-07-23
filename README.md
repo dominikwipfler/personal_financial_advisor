@@ -119,7 +119,7 @@ aus dem Finanzmanagement-Skript, Kap. 1&2):
 | `src/advisor/rebalancing.py` | Umschichtungsplan: Ist-Depot → Ziel-Allokation mit Ordergebühren, Handels-Schwellen und „neues Geld zuerst"-Prinzip |
 | `src/advisor/research.py` | Websuche + Nachrichten-Suche (ddgs, mit Backend-Fallback), Seitenabruf (httpx + BeautifulSoup), Marktdaten (yfinance) |
 | `src/advisor/agent.py` | Agent-Verdrahtung: Modell, Instructions, Tool-Registrierung (dünne Adapter um die Fachmodule) |
-| `src/advisor/webapp.py` | Web-App-Schicht mit Profil **pro Konversation** (SessionStore, Chat-ID → eigenes `AdvisorDeps`); bildet die `to_web()`-Endpunkte über den `VercelAIAdapter` nach |
+| `src/advisor/webapp.py` | Web-App-Schicht mit Profil **pro Konversation** (SessionStore, Chat-ID → eigenes `AdvisorDeps`, SQLite-persistiert); bildet die `to_web()`-Endpunkte über den `VercelAIAdapter` nach |
 | `src/advisor/app.py` | Einstiegspunkt: verdrahtet Agent, Modell-Liste (LiteLLM) und `webapp.create_app()` |
 
 **Designprinzip:** Das Zahlenwerk (Risikoklasse, Allokation, Sparplan) wird
@@ -149,6 +149,11 @@ uv run uvicorn advisor.app:app --reload
 
 Danach <http://localhost:8000> öffnen – die Chat-UI lädt beim ersten Aufruf
 vom CDN und wird lokal gecacht.
+
+Beim ersten Start legt die App automatisch `advisor_sessions.db` im
+Projektverzeichnis an (SQLite, Nutzerprofile pro Konversation – überlebt
+Server-Neustarts). Kein manueller Schritt nötig; Pfad optional über
+`ADVISOR_DB_PATH` in der `.env` änderbar.
 
 ### Nutzung mit dem HKA-LLM-Server (empfohlen)
 
@@ -235,6 +240,7 @@ sind in der Chat-UI einsehbar – nützlich zum Nachvollziehen der Beratung.
 
 - **401 `Missing Authentication header`**: Der API-Key oder die Provider-URL ist falsch. Prüfe `OPENAI_API_KEY` / `LITELLM_API_KEY` und die passende `OPENAI_BASE_URL` bzw. `LITELLM_SERVER_URL`.
 - **400 `BadRequestError`**: Die Modellanfrage war nicht kompatibel mit dem Provider oder Modell. Häufig hilft ein anderes Modell bzw. eine klarere Eingabe.
+- **400 „Thought signature is not valid" / „Corrupted thought signature"**: bekanntes, unregelmäßiges Problem von `gemini-3-flash-preview` (Vorschau-Modell) bei mehrstufigen Tool-Aufrufen über LiteLLM/Vertex AI – reproduzierbar mit denselben Eingaben mal erfolgreich, mal nicht; kein Fehler dieser Anwendung und nicht zuverlässig über `reasoning_effort` behebbar (getestet). Der Server wiederholt die Anfrage automatisch; tritt der Fehler weiterhin auf, hilft ein Wechsel auf ein anderes Modell aus der Benchmark-Tabelle oben (z. B. `gpt-oss-120b`).
 - **Timeouts / 502 / 503 / 504**: Provider war kurz nicht erreichbar oder zu langsam. Der Server versucht automatisch mehrere Male erneut; bei wiederholtem Fehler erneut versuchen.
 - **UI-Meldung**: Fehler werden in der Chat-UI als Banner eingeblendet, statt nur im Server-Log zu landen.
 
@@ -322,20 +328,19 @@ Konfigurations-/Key-Management-Pattern (inkl. optionalem LiteLLM-Betrieb).
 Sinnvolle Erweiterungen, grob nach Nutzen sortiert (bewusst noch nicht
 umgesetzt, um den Kern schlank und geprüft zu halten):
 
-1. **Persistentes Profil (SQLite):** Das Profil überlebt aktuell keinen
-   Server-Neustart. Ein Speicher-Backend hinter `AdvisorDeps` wäre der größte
-   Alltagsgewinn und passt in das bestehende Design.
-2. **Zielprojektion/Monte-Carlo-Simulation:** „Reichen 350 €/Monat für Betrag X
+1. **Zielprojektion/Monte-Carlo-Simulation:** „Reichen 350 €/Monat für Betrag X
    mit 67?" – deterministische Simulation der Sparziele mit Unsicherheitsband
    würde die Strategie greifbarer machen.
-3. **Strategie-Export:** Ausgabe der fertigen Strategie als Markdown-/PDF-Datei
-   zum Abheften bzw. für die Abgabe.
-4. **Jährlicher Check-up-Modus:** Profil laden, aktuelle Depotwerte abfragen,
+2. **Jährlicher Check-up-Modus:** Profil laden, aktuelle Depotwerte abfragen,
    Rebalancing-Vorschlag – die Bausteine (Profil + Umschichtungs-Engine)
    existieren bereits.
-5. **Bessere Produktdatenquellen:** justETF/extraETF liefern TER, Volumen und
+3. **Bessere Produktdatenquellen:** justETF/extraETF liefern TER, Volumen und
    Replikation strukturierter als Yahoo Finance – ein dediziertes
    ETF-Daten-Tool würde die Produktvorschläge robuster machen.
+
+Bereits umgesetzt: Profil-Persistenz (SQLite, überlebt Server-Neustarts) und
+Strategie-Export (Markdown-Download bzw. PDF über die Druckansicht) – siehe
+Beratungsstatus-Panel in der Web-UI.
 6. **Feinere Steuerschätzung:** Trennung der Verlustverrechnungstöpfe
    (Aktien vs. Sonstige), FIFO bei Teilverkäufen, Anrechnung versteuerter
    Vorabpauschalen.

@@ -9,6 +9,7 @@ austauschbar.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from typing import Any, cast
 
 from pydantic_ai import Agent, RunContext
@@ -196,6 +197,15 @@ def profil_zuruecksetzen(ctx: RunContext[AdvisorDeps]) -> str:
 # ----------------------- Risiko- und Strategie-Tools -----------------------
 
 
+def _verlauf_eintrag(ergebnis: Any) -> dict[str, Any]:
+    """Ein Snapshot für das Risiko-Verlaufs-Chart der Web-UI (siehe webapp.py)."""
+    return {
+        "risikoklasse": ergebnis.risikoklasse,
+        "aktienquote_empfohlen": ergebnis.aktienquote_empfohlen,
+        "zeitpunkt": datetime.now().strftime("%H:%M:%S"),
+    }
+
+
 @agent.tool
 def ermittle_risikoprofil_tool(ctx: RunContext[AdvisorDeps]) -> str:
     """Berechnet Risikoklasse und Aktienquote aus dem vollständigen Profil.
@@ -211,6 +221,7 @@ def ermittle_risikoprofil_tool(ctx: RunContext[AdvisorDeps]) -> str:
 
     ergebnis = ermittle_risikoprofil(p)
     ctx.deps.profile = p.model_copy(update={"risikoklasse": ergebnis.risikoklasse})
+    ctx.deps.risiko_verlauf.append(_verlauf_eintrag(ergebnis))
     ctx.deps.letztes_risiko = ergebnis.__dict__
     return json.dumps(ergebnis.__dict__, ensure_ascii=False, indent=1)
 
@@ -229,6 +240,7 @@ def erstelle_strategie_tool(ctx: RunContext[AdvisorDeps]) -> str:
 
     risiko = ermittle_risikoprofil(p)
     strategie = erstelle_strategie(p, risiko)
+    ctx.deps.risiko_verlauf.append(_verlauf_eintrag(risiko))
     ctx.deps.letztes_risiko = risiko.__dict__
     ctx.deps.letzte_strategie = strategie
     return json.dumps(strategie, ensure_ascii=False, indent=1)
@@ -267,6 +279,7 @@ def erstelle_umschichtungsplan_tool(
         gebuehr_prozent=gebuehr_prozent,
         gebuehr_min_eur=gebuehr_min_eur,
     )
+    ctx.deps.risiko_verlauf.append(_verlauf_eintrag(risiko))
     ctx.deps.letztes_risiko = risiko.__dict__
     ctx.deps.letzte_strategie = strategie
     ctx.deps.letzter_umschichtungsplan = plan

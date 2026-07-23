@@ -59,6 +59,10 @@ def test_kompletter_beratungs_tool_loop():
     assert p.ist_vollstaendig(), f"Profil unvollständig: {p.fehlende_angaben()}"
     assert p.risikoklasse == 4
 
+    # Risiko- und Strategie-Tool berechnen beide dasselbe Risiko erneut -> zwei
+    # Einträge im Verlauf (Grundlage für das Verlaufs-Chart der Web-UI).
+    assert [e["risikoklasse"] for e in deps.risiko_verlauf] == [4, 4]
+
     tool_returns = [
         part
         for m in result.all_messages()

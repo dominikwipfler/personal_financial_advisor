@@ -9,20 +9,26 @@ Konversation (Chat-ID aus dem Vercel-AI-Request) ein eigenes `AdvisorDeps` zu:
 - Mehrere Personen können den Server gleichzeitig nutzen (je Chat ein Profil).
 - `profil_zuruecksetzen` wirkt nur auf die aktuelle Konversation.
 
-Die Profile liegen weiterhin im Arbeitsspeicher (kein Persistenz-Backend,
-siehe LIMITATIONS.md); ein Server-Neustart leert sie.
+Die Profile werden zusätzlich in einer SQLite-Datei gespiegelt (siehe
+`SessionStore`), damit ein Server-Neustart sie nicht mehr löscht; im laufenden
+Betrieb bleibt ein In-Memory-Cache (LRU, `MAX_SESSIONS`) die schnelle
+Zugriffsebene.
 """
 
 from __future__ import annotations
 
 import asyncio
+import json
+import sqlite3
 import sys
 import traceback
 from collections import OrderedDict
 from collections.abc import Mapping
 from datetime import datetime
+from typing import Any
 
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from starlette.routing import Mount, Route
@@ -37,6 +43,7 @@ from pydantic_ai.models import Model, infer_model
 from pydantic_ai.ui._web.app import _get_ui_html  # pyright: ignore[reportPrivateUsage]
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
 
+from advisor.config import DB_PATH
 from advisor.profile import PFLICHTANGABEN, AdvisorDeps, UserProfile
 
 MAX_SESSIONS = 200
@@ -85,6 +92,7 @@ def _session_state(deps: AdvisorDeps) -> dict:
         },
         "profilFortschritt": {"erfasst": erfasst, "gesamt": len(PFLICHTANGABEN)},
         "risiko": deps.letztes_risiko,
+        "risikoVerlauf": deps.risiko_verlauf,
         "strategie": deps.letzte_strategie,
         "umschichtungsplan": deps.letzter_umschichtungsplan,
     }
@@ -126,6 +134,10 @@ def _export_markdown(deps: AdvisorDeps) -> str:
         ]
         for begrenzung in risiko.get("begrenzungen") or []:
             zeilen.append(f"  - {begrenzung}")
+
+    if len(deps.risiko_verlauf) > 1:
+        verlauf = " → ".join(str(v["risikoklasse"]) for v in deps.risiko_verlauf)
+        zeilen.append(f"- **Verlauf der Risikoklasse im Gespräch:** {verlauf}")
 
     strategie = deps.letzte_strategie
     if strategie:
@@ -196,23 +208,88 @@ def _export_print_html(markdown: str) -> str:
 class SessionStore:
     """Hält je Konversation (Chat-ID) ein eigenes AdvisorDeps-Objekt.
 
-    Begrenzte Größe mit Verdrängung der ältesten Sitzung, damit ein lange
-    laufender Server nicht unbegrenzt Profile ansammelt.
+    Zwei Ebenen: ein In-Memory-LRU-Cache (`_sessions`, begrenzt auf
+    `max_sessions`, damit ein lange laufender Server nicht unbegrenzt viele
+    Objekte im Arbeitsspeicher hält) vor einer SQLite-Datei, die dieselben
+    Daten dauerhaft hält – ein Server-Neustart verliert dadurch keine Profile
+    mehr; `speichere()` muss nach jeder Mutation eines `AdvisorDeps` explizit
+    aufgerufen werden (siehe `post_chat`/`post_profile`), da die Objekte selbst
+    nichts von der Persistenz wissen.
     """
 
-    def __init__(self, max_sessions: int = MAX_SESSIONS) -> None:
+    def __init__(self, max_sessions: int = MAX_SESSIONS, db_path: str | None = None) -> None:
         self._sessions: OrderedDict[str, AdvisorDeps] = OrderedDict()
         self._max = max_sessions
+        # Erst hier (statt als Default-Argument) aufgelöst, damit Tests
+        # `advisor.webapp.DB_PATH` per monkeypatch auf eine temporäre Datei
+        # umbiegen können, ohne die reale Datei im Projektverzeichnis zu berühren.
+        self._db_path = db_path or DB_PATH
+        self._init_db()
+
+    def _connect(self) -> sqlite3.Connection:
+        return sqlite3.connect(self._db_path)
+
+    def _init_db(self) -> None:
+        conn = self._connect()
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS sessions ("
+                "chat_id TEXT PRIMARY KEY, daten TEXT NOT NULL, aktualisiert_am TEXT NOT NULL)"
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _aus_db_laden(self, chat_id: str) -> AdvisorDeps | None:
+        conn = self._connect()
+        try:
+            zeile = conn.execute(
+                "SELECT daten FROM sessions WHERE chat_id = ?", (chat_id,)
+            ).fetchone()
+        finally:
+            conn.close()
+        if zeile is None:
+            return None
+        try:
+            return AdvisorDeps.from_dict(json.loads(zeile[0]))
+        except Exception:  # noqa: BLE001
+            # Beschädigter/inkompatibler Datensatz (z. B. nach Schema-Änderung):
+            # lieber mit leerem Profil neu starten als die ganze App blockieren.
+            print(f"Konnte Session '{chat_id}' nicht aus SQLite laden – starte leer.", file=sys.stderr)
+            return None
 
     def get(self, chat_id: str) -> AdvisorDeps:
         if chat_id in self._sessions:
             self._sessions.move_to_end(chat_id)
             return self._sessions[chat_id]
-        deps = AdvisorDeps()
+        deps = self._aus_db_laden(chat_id) or AdvisorDeps()
         self._sessions[chat_id] = deps
         while len(self._sessions) > self._max:
             self._sessions.popitem(last=False)
         return deps
+
+    def speichere(self, chat_id: str) -> None:
+        """Schreibt den aktuellen Stand einer Konversation nach SQLite.
+
+        Muss nach jeder Anfrage aufgerufen werden, die `AdvisorDeps` mutiert
+        haben könnte (Chat-Turn mit Tool-Aufrufen, Formular-Übernahme) – die
+        Mutation selbst passiert direkt auf dem Objekt, ohne dass diese Klasse
+        davon erfährt.
+        """
+        deps = self._sessions.get(chat_id)
+        if deps is None:
+            return
+        payload = json.dumps(deps.to_dict(), ensure_ascii=False)
+        conn = self._connect()
+        try:
+            conn.execute(
+                "INSERT INTO sessions (chat_id, daten, aktualisiert_am) VALUES (?, ?, datetime('now')) "
+                "ON CONFLICT(chat_id) DO UPDATE SET daten = excluded.daten, aktualisiert_am = excluded.aktualisiert_am",
+                (chat_id, payload),
+            )
+            conn.commit()
+        finally:
+            conn.close()
 
     def __len__(self) -> int:
         return len(self._sessions)
@@ -242,6 +319,15 @@ def _inject_ui_enhancements(html: str) -> str:
     """
     overlay = """
 <style>
+/* Die Chat-UI zentriert Nachrichtenbereich + Eingabezeile bei einer leeren
+   Konversation vertikal (Tailwind-Klasse "justify-center" auf dem Wrapper),
+   statt die Eingabe unten anzulegen. Gezielte Überschreibung nur für exakt
+   diese Klassenkombination (in der aktuellen CDN-Version einmalig für diesen
+   Wrapper); trifft die Chat-UI keine der Klassen mehr (CDN-Update), greift
+   die Regel einfach nicht mehr – kein hartes position:fixed, das mit dem
+   internen Scroll-/Sticky-Verhalten der Chat-UI kollidieren könnte. */
+.flex.flex-col.justify-center.flex-1.h-screen.overflow-hidden { justify-content: flex-end !important; }
+
 #advisor-status-pill {
     position: fixed; top: 12px; left: 12px; z-index: 9998;
     display: flex; align-items: center; gap: 7px;
@@ -286,16 +372,14 @@ def _inject_ui_enhancements(html: str) -> str:
 }
 #advisor-panel {
     position: fixed; top: 0; right: 0; height: 100vh; width: min(340px, 92vw);
-    z-index: 9991; background: #ffffff; color: #111827;
-    box-shadow: -8px 0 24px rgba(0,0,0,0.18);
+    z-index: 9991; background: var(--popover, #fff); color: var(--popover-foreground, #111827);
+    border-left: 1px solid var(--border, rgba(120,120,120,0.2));
+    box-shadow: -4px 0 16px rgba(0,0,0,0.08);
     transform: translateX(100%); transition: transform 0.25s ease;
     overflow-y: auto; font: 13px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
     padding: 16px;
 }
 #advisor-panel.advisor-open { transform: translateX(0); }
-@media (prefers-color-scheme: dark) {
-    #advisor-panel { background: #17181c; color: #e5e7eb; }
-}
 #advisor-panel h3 { margin: 0 0 12px; font-size: 15px; }
 #advisor-panel h4 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; opacity: 0.7; }
 #advisor-panel-close { position: absolute; top: 12px; right: 14px; cursor: pointer; background: none; border: 0; font-size: 16px; color: inherit; }
@@ -304,16 +388,16 @@ def _inject_ui_enhancements(html: str) -> str:
 .advisor-step { flex: 1; text-align: center; font-size: 11px; opacity: 0.55; position: relative; }
 .advisor-step span { display: block; width: 10px; height: 10px; border-radius: 50%; background: #9ca3af; margin: 0 auto 4px; }
 .advisor-step-active { opacity: 1; font-weight: 600; }
-.advisor-step-active span { background: #3b82f6; }
+.advisor-step-active span { background: var(--primary, #3b82f6); }
 .advisor-step-done { opacity: 0.9; }
 .advisor-step-done span { background: #22c55e; }
 
 .advisor-card {
-    border: 1px solid rgba(120,120,120,0.25); border-radius: 10px;
+    border: 1px solid var(--border, rgba(120,120,120,0.25)); border-radius: calc(var(--radius, 10px) - 2px);
     padding: 10px 12px; margin-bottom: 10px;
 }
-.advisor-bar { height: 6px; border-radius: 999px; background: rgba(120,120,120,0.25); overflow: hidden; margin-bottom: 6px; }
-.advisor-bar-fill { height: 100%; background: #3b82f6; }
+.advisor-bar { height: 6px; border-radius: 999px; background: var(--muted, rgba(120,120,120,0.25)); overflow: hidden; margin-bottom: 6px; }
+.advisor-bar-fill { height: 100%; background: var(--primary, #3b82f6); }
 .advisor-kv { display: flex; justify-content: space-between; gap: 8px; padding: 2px 0; }
 .advisor-kv span { opacity: 0.65; }
 .advisor-kv b { text-align: right; }
@@ -377,6 +461,34 @@ def _inject_ui_enhancements(html: str) -> str:
 .advisor-slider-scale { display: flex; justify-content: space-between; font-size: 11px; opacity: 0.55; margin-top: 2px; }
 .advisor-slider-value { margin-top: 6px; font-size: 13px; font-weight: 600; min-height: 18px; }
 .advisor-slider-value.advisor-slider-untouched { font-weight: 400; opacity: 0.55; font-style: italic; }
+
+/* ---- Visualisierungen im Beratungsstatus-Panel (Risiko-Skala, Verlauf,
+   Portfolio-Balken) -----------------------------------------------------
+   Datenfarben folgen der validierten Standard-Palette des dataviz-Skills
+   (ordinal/kategorial, per Skript gegen Kontrast/CVD geprüft) statt der
+   Marken-Akzentfarbe der Chat-UI – das ist bei Diagrammfarben bewusst so
+   getrennt von den übrigen UI-Elementen (die var(--primary) etc. nutzen). */
+.viz-gauge-title { font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+.viz-gauge-track { display: flex; gap: 2px; height: 16px; border-radius: 4px; overflow: hidden; }
+.viz-gauge-seg { flex: 1; }
+.viz-gauge-seg.viz-gauge-current { outline: 2px solid var(--popover-foreground, #111); outline-offset: -2px; }
+.viz-gauge-ticks { display: flex; margin-top: 4px; }
+.viz-gauge-ticks span { flex: 1; text-align: center; font-size: 10px; opacity: 0.55; }
+.viz-gauge-ticks span.viz-tick-active { font-weight: 700; opacity: 1; }
+
+.viz-history-empty { font-size: 12px; opacity: 0.6; font-style: italic; }
+.viz-history-svg { width: 100%; height: 70px; display: block; }
+.viz-grid { stroke: var(--border, #e1e0d9); stroke-width: 1; }
+.viz-axis-label { font-size: 7px; fill: var(--muted-foreground, #898781); }
+
+.viz-alloc-track { display: flex; gap: 2px; height: 22px; border-radius: 4px; overflow: hidden; margin-bottom: 8px; }
+.viz-alloc-seg { display: flex; align-items: center; justify-content: center; }
+.viz-alloc-seg span { font-size: 10px; color: #fff; text-shadow: 0 1px 1px rgba(0,0,0,0.35); }
+.viz-legend { display: flex; flex-direction: column; gap: 4px; }
+.viz-legend-row { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+.viz-legend-row span:nth-child(2) { flex: 1; opacity: 0.85; }
+.viz-legend-row b { font-weight: 600; }
+.viz-swatch { width: 10px; height: 10px; border-radius: 2px; flex: none; }
 </style>
 
 <div id="advisor-status-pill" data-state="loading"><span class="advisor-dot"></span><span id="advisor-status-text">Modell lädt…</span></div>
@@ -547,41 +659,100 @@ def _inject_ui_enhancements(html: str) -> str:
             hintApplied = true;
         }
     }
-    setInterval(applyInputHint, 1000);
+
+    // ---- Willkommens-Maske an der echten Chat-Spalte ausrichten -----------
+    // Statt über die gesamte Seite (inkl. Sidebar) zu zentrieren, wird die
+    // Breite/Position der Eingabezeile gemessen (einziger stabiler Anker, den
+    // wir kennen) und die Maske darauf ausgerichtet – dadurch wirkt sie wie
+    // Teil der Chat-Spalte statt lose darüber zu schweben, und überlappt
+    // nicht mehr mit Eingabefeld/Modell-Auswahl dahinter.
+    function positionEmptyOverlay() {
+        const overlay = document.getElementById('advisor-empty-overlay');
+        const ta = document.querySelector('textarea');
+        if (!overlay || !ta || overlay.classList.contains('advisor-hidden')) return;
+        const anker = ta.closest('form') || ta;
+        const rect = anker.getBoundingClientRect();
+        if (rect.width < 200) return;
+        overlay.style.left = rect.left + 'px';
+        overlay.style.transform = 'none';
+        overlay.style.width = rect.width + 'px';
+        const top = 64;
+        overlay.style.top = top + 'px';
+        overlay.style.maxHeight = Math.max(200, rect.top - top - 16) + 'px';
+    }
+    window.addEventListener('resize', positionEmptyOverlay);
 
     // ---- Leerzustand / Schnellwahl -----------------------------------------
-    function hideEmptyOverlay() {
+    // Chat-IDs, für die die Maske in dieser Seiten-Session nicht mehr gezeigt
+    // werden soll (Nachricht gesendet ODER laut Server-Status nicht mehr leer
+    // ODER vom Nutzer explizit geschlossen/übersprungen). Wird PRO Chat-ID
+    // geführt statt global, damit ein neuer Chat trotzdem die Maske zeigt.
+    const OHNE_FORMULAR = new Set();
+
+    function setOverlaySichtbar(sichtbar) {
         const overlay = document.getElementById('advisor-empty-overlay');
-        if (overlay) overlay.classList.add('advisor-hidden');
+        if (!overlay) return;
+        if (sichtbar) {
+            overlay.classList.remove('advisor-hidden');
+            positionEmptyOverlay();
+        } else {
+            overlay.classList.add('advisor-hidden');
+        }
+    }
+
+    function hideEmptyOverlay() {
+        OHNE_FORMULAR.add(currentChatId);
+        setOverlaySichtbar(false);
     }
 
     // Die Maske startet server-seitig versteckt (siehe HTML) und wird nur
-    // eingeblendet, wenn die aktuelle Konversation laut Session-State noch
-    // kein Profil hat – so bleibt sie bei einem neuen Chat sichtbar, aber
-    // taucht bei einem bereits begonnenen Chat (z. B. nach Reload) nicht
-    // erneut über den vorhandenen Nachrichten auf. Ein globales
+    // eingeblendet, wenn die AKTUELL angezeigte Konversation laut Session-State
+    // noch kein Profil hat. Die Chat-UI ist eine SPA: Zwischen Konversationen in
+    // der Sidebar zu wechseln lädt die Seite nicht neu, daher muss diese Prüfung
+    // jedes Mal erneut laufen, wenn sich `currentChatId` ändert (siehe Poller
+    // unten) – nicht nur einmal beim initialen Laden. Ein globales
     // "einmal gesehen, nie wieder"-Flag (z. B. via localStorage) würde hier
     // fälschlich auch neue Chats unterdrücken, sobald irgendeine Konversation
     // jemals begonnen wurde.
-    function zeigeEmptyOverlayFallsNeueKonversation() {
-        const overlay = document.getElementById('advisor-empty-overlay');
-        if (!overlay) return;
-        let entschieden = false;
-        function entscheide(zeigen) {
-            if (entschieden) return;
-            entschieden = true;
-            if (zeigen) overlay.classList.remove('advisor-hidden');
+    function aktualisiereEmptyOverlayFuerAktuellenChat() {
+        if (OHNE_FORMULAR.has(currentChatId)) {
+            setOverlaySichtbar(false);
+            return;
         }
-        setTimeout(function () { entscheide(true); }, 1500);
         originalFetch('/api/state/' + encodeURIComponent(currentChatId))
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (state) {
                 const hatFortschritt = !!(state && state.profilFortschritt && state.profilFortschritt.erfasst > 0);
-                entscheide(!hatFortschritt);
+                if (hatFortschritt) {
+                    OHNE_FORMULAR.add(currentChatId);
+                    setOverlaySichtbar(false);
+                } else {
+                    setOverlaySichtbar(true);
+                }
             })
-            .catch(function () { entscheide(true); });
+            .catch(function () { setOverlaySichtbar(true); });
     }
-    zeigeEmptyOverlayFallsNeueKonversation();
+    aktualisiereEmptyOverlayFuerAktuellenChat();
+
+    // ---- Chat-Wechsel per SPA-Navigation erkennen --------------------------
+    // Ein Klick auf eine andere Konversation in der Sidebar ändert die URL
+    // (Client-Routing), lädt die Seite aber NICHT neu – ohne diese Prüfung
+    // würden sowohl die Leerzustand-Maske als auch das Beratungsstatus-Panel
+    // (falls offen) weiter die Daten der vorher aktiven Konversation zeigen.
+    let letzterPfad = location.pathname;
+    setInterval(function () {
+        applyInputHint();
+        positionEmptyOverlay();
+        const pfad = location.pathname.replace(/^\\/+/, '').trim();
+        if (pfad === letzterPfad.replace(/^\\/+/, '').trim()) return;
+        letzterPfad = location.pathname;
+        currentChatId = pfad || 'default';
+        aktualisiereEmptyOverlayFuerAktuellenChat();
+        const offenesPanel = document.getElementById('advisor-panel');
+        if (offenesPanel && offenesPanel.classList.contains('advisor-open')) {
+            refreshStatePanel();
+        }
+    }, 1000);
 
     function setNativeValue(el, value) {
         const proto = el.tagName === 'TEXTAREA' ? window.HTMLTextAreaElement.prototype : window.HTMLInputElement.prototype;
@@ -626,8 +797,8 @@ def _inject_ui_enhancements(html: str) -> str:
     const profileForm = document.getElementById('advisor-profile-form');
     const step1El = document.getElementById('advisor-step-1');
     const step2El = document.getElementById('advisor-step-2');
-    function goToStep2() { step1El.classList.add('advisor-hidden'); step2El.classList.remove('advisor-hidden'); }
-    function goToStep1() { step2El.classList.add('advisor-hidden'); step1El.classList.remove('advisor-hidden'); }
+    function goToStep2() { step1El.classList.add('advisor-hidden'); step2El.classList.remove('advisor-hidden'); positionEmptyOverlay(); }
+    function goToStep1() { step2El.classList.add('advisor-hidden'); step1El.classList.remove('advisor-hidden'); positionEmptyOverlay(); }
 
     // Schritt 1 -> Schritt 2 (noch kein Absenden an den Chat).
     profileForm.addEventListener('submit', function (e) {
@@ -722,6 +893,106 @@ def _inject_ui_enhancements(html: str) -> str:
         }).join('');
     }
 
+    // ---- Diagramm-Farben (dataviz-Skill, validiert per validate_palette.js) ----
+    function istDarkModus() { return document.documentElement.classList.contains('dark'); }
+
+    // Ordinale Rampe (Risikoklasse 1-5, EINE Farbfamilie, monoton heller->dunkler),
+    // getrennt nach Modus optimiert (siehe Kontrast-/CVD-Vorgaben je Oberfläche).
+    const RISIKO_RAMPE_HELL = ['#86b6ef', '#5598e7', '#2a78d6', '#1c5cab', '#0d366b'];
+    const RISIKO_RAMPE_DUNKEL = ['#b7d3f6', '#6da7ec', '#3987e5', '#256abf', '#184f95'];
+    const RISIKO_KLASSEN = [
+        { n: 1, label: 'Sehr defensiv' },
+        { n: 2, label: 'Defensiv' },
+        { n: 3, label: 'Ausgewogen' },
+        { n: 4, label: 'Wachstumsorientiert' },
+        { n: 5, label: 'Offensiv' },
+    ];
+
+    // Kategoriale Slots (Identität der Anlageklasse), feste Reihenfolge je Baustein
+    // -- Farbe folgt der Kategorie, nicht ihrem Anteil, auch wenn sich die Werte
+    // bei einer Neuberechnung ändern.
+    const ALLOKATION_SLOTS = {
+        aktien_welt_industrielaender: { hell: '#2a78d6', dunkel: '#3987e5', label: 'Aktien Welt (Industrieländer)' },
+        aktien_schwellenlaender: { hell: '#eb6834', dunkel: '#d95926', label: 'Aktien Schwellenländer' },
+        anleihen_eur_investment_grade: { hell: '#1baf7a', dunkel: '#199e70', label: 'Anleihen (EUR, Investment Grade)' },
+        geldmarkt_tagesgeld: { hell: '#eda100', dunkel: '#c98500', label: 'Geldmarkt / Tagesgeld' },
+        gold: { hell: '#e87ba4', dunkel: '#d55181', label: 'Gold' },
+    };
+    const ALLOKATION_REIHENFOLGE = Object.keys(ALLOKATION_SLOTS);
+
+    function renderRiskGauge(risiko) {
+        const rampe = istDarkModus() ? RISIKO_RAMPE_DUNKEL : RISIKO_RAMPE_HELL;
+        const aktuelle = risiko ? risiko.risikoklasse : null;
+        const segs = RISIKO_KLASSEN.map(function (k) {
+            const aktiv = aktuelle === k.n;
+            return '<div class="viz-gauge-seg' + (aktiv ? ' viz-gauge-current' : '') + '" style="background:' + rampe[k.n - 1] + '" title="Klasse ' + k.n + ' – ' + k.label + '"></div>';
+        }).join('');
+        const ticks = RISIKO_KLASSEN.map(function (k) {
+            return '<span class="' + (aktuelle === k.n ? 'viz-tick-active' : '') + '">' + k.n + '</span>';
+        }).join('');
+        const aktuelleKlasse = RISIKO_KLASSEN.find(function (k) { return k.n === aktuelle; });
+        const titel = aktuelleKlasse ? ('Klasse ' + aktuelle + ' – ' + esc(aktuelleKlasse.label)) : 'Noch nicht berechnet';
+        return (
+            '<div class="viz-gauge-title">' + titel + '</div>' +
+            '<div class="viz-gauge-track">' + segs + '</div>' +
+            '<div class="viz-gauge-ticks">' + ticks + '</div>'
+        );
+    }
+
+    function renderRiskHistory(verlauf) {
+        if (!verlauf || verlauf.length === 0) return '';
+        if (verlauf.length === 1) {
+            return '<div class="viz-history-empty">Noch keine Änderung im bisherigen Gesprächsverlauf.</div>';
+        }
+        const w = 260, h = 70, padL = 18, padR = 8, padT = 8, padB = 10;
+        const plotW = w - padL - padR, plotH = h - padT - padB;
+        const n = verlauf.length;
+        const farbe = istDarkModus() ? '#3987e5' : '#2a78d6';
+        const oberflaeche = istDarkModus() ? '#1a1a19' : '#fcfcfb';
+        const punkte = verlauf.map(function (v, i) {
+            const x = padL + (n === 1 ? 0 : (i / (n - 1)) * plotW);
+            const y = padT + plotH - ((v.risikoklasse - 1) / 4) * plotH;
+            return { x: x, y: y, v: v };
+        });
+        const pfad = punkte.map(function (p, i) { return (i === 0 ? 'M' : 'L') + p.x.toFixed(1) + ',' + p.y.toFixed(1); }).join(' ');
+        const gitter = [1, 2, 3, 4, 5].map(function (k) {
+            const y = padT + plotH - ((k - 1) / 4) * plotH;
+            return '<line x1="' + padL + '" y1="' + y.toFixed(1) + '" x2="' + (w - padR) + '" y2="' + y.toFixed(1) + '" class="viz-grid" />' +
+                '<text x="0" y="' + (y + 2.5).toFixed(1) + '" class="viz-axis-label">' + k + '</text>';
+        }).join('');
+        const punkteHtml = punkte.map(function (p, i) {
+            const letzter = i === punkte.length - 1;
+            const titel = 'Berechnung ' + (i + 1) + ': Klasse ' + p.v.risikoklasse + (p.v.zeitpunkt ? (' um ' + esc(p.v.zeitpunkt)) : '');
+            return '<circle cx="' + p.x.toFixed(1) + '" cy="' + p.y.toFixed(1) + '" r="' + (letzter ? 5 : 4) + '" fill="' + farbe + '" stroke="' + oberflaeche + '" stroke-width="2"><title>' + titel + '</title></circle>';
+        }).join('');
+        return (
+            '<svg class="viz-history-svg" viewBox="0 0 ' + w + ' ' + h + '" preserveAspectRatio="xMidYMid meet">' +
+            gitter +
+            '<path d="' + pfad + '" fill="none" stroke="' + farbe + '" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />' +
+            punkteHtml +
+            '</svg>'
+        );
+    }
+
+    function renderAllocationBar(allokation) {
+        if (!allokation) return '';
+        const dunkel = istDarkModus();
+        const keys = ALLOKATION_REIHENFOLGE.filter(function (k) { return allokation[k] != null && allokation[k] > 0; });
+        if (!keys.length) return '';
+        const segs = keys.map(function (k) {
+            const pct = allokation[k];
+            const farbe = dunkel ? ALLOKATION_SLOTS[k].dunkel : ALLOKATION_SLOTS[k].hell;
+            const beschriftung = pct >= 12 ? ('<span>' + Math.round(pct) + ' %</span>') : '';
+            return '<div class="viz-alloc-seg" style="flex:' + pct + '; background:' + farbe + '" title="' + esc(ALLOKATION_SLOTS[k].label) + ': ' + pct + ' %">' + beschriftung + '</div>';
+        }).join('');
+        const legende = keys.map(function (k) {
+            const farbe = dunkel ? ALLOKATION_SLOTS[k].dunkel : ALLOKATION_SLOTS[k].hell;
+            return '<div class="viz-legend-row"><span class="viz-swatch" style="background:' + farbe + '"></span>' +
+                '<span>' + esc(ALLOKATION_SLOTS[k].label) + '</span><b>' + allokation[k] + ' %</b></div>';
+        }).join('');
+        return '<div class="viz-alloc-track">' + segs + '</div><div class="viz-legend">' + legende + '</div>';
+    }
+
     function renderCards(state) {
         const parts = [];
         const fp = state.profilFortschritt || { erfasst: 0, gesamt: 0 };
@@ -740,17 +1011,26 @@ def _inject_ui_enhancements(html: str) -> str:
             const r = state.risiko;
             parts.push(
                 '<div class="advisor-card"><h4>Risiko</h4>' +
-                '<div class="advisor-kv"><span>Risikoklasse</span><b>' + esc(r.risikoklasse) + ' – ' + esc(r.klassen_name) + '</b></div>' +
-                '<div class="advisor-kv"><span>Aktienquote empfohlen</span><b>' + Math.round((r.aktienquote_empfohlen || 0) * 100) + ' %</b></div>' +
+                renderRiskGauge(r) +
+                '<div class="advisor-kv" style="margin-top:8px"><span>Aktienquote empfohlen</span><b>' + Math.round((r.aktienquote_empfohlen || 0) * 100) + ' %</b></div>' +
+                '</div>'
+            );
+        }
+
+        if (state.risikoVerlauf && state.risikoVerlauf.length > 1) {
+            parts.push(
+                '<div class="advisor-card"><h4>Risiko im Gesprächsverlauf</h4>' +
+                renderRiskHistory(state.risikoVerlauf) +
                 '</div>'
             );
         }
 
         if (state.strategie) {
-            const allokZeilen = Object.entries(state.strategie.allokation_prozent || {}).map(function (kv) {
-                return '<div class="advisor-kv"><span>' + esc(kv[0].replace(/_/g, ' ')) + '</span><b>' + esc(kv[1]) + ' %</b></div>';
-            }).join('');
-            parts.push('<div class="advisor-card"><h4>Strategie</h4>' + allokZeilen + '</div>');
+            parts.push(
+                '<div class="advisor-card"><h4>Portfolio</h4>' +
+                renderAllocationBar(state.strategie.allokation_prozent) +
+                '</div>'
+            );
         }
 
         if (state.umschichtungsplan && !state.umschichtungsplan.fehler) {
@@ -927,7 +1207,11 @@ def create_app(
     async def index(request: Request) -> Response:
         content = (await _get_ui_html(None)).decode("utf-8")
         content = _inject_ui_enhancements(content)
-        return HTMLResponse(content=content, headers={"Cache-Control": "public, max-age=3600"})
+        # kein Caching: der HTML-Wrapper enthält unseren eigenen, sich häufig
+        # ändernden UI-Code (siehe _inject_ui_enhancements); die eigentlichen
+        # CDN-Assets (JS/CSS) sind ohnehin über ihre eigenen, inhaltsadressierten
+        # URLs dauerhaft cachebar und von dieser Einstellung unberührt.
+        return HTMLResponse(content=content, headers={"Cache-Control": "no-cache"})
 
     async def configure_frontend(request: Request) -> Response:
         return JSONResponse(
@@ -964,6 +1248,7 @@ def create_app(
         except Exception as e:  # noqa: BLE001
             return JSONResponse({"error": f"Ungültige Profildaten: {e}"}, status_code=400)
 
+        sessions.speichere(request.path_params["chat_id"])
         return JSONResponse(_session_state(deps))
 
     async def get_export(request: Request) -> Response:
@@ -1000,12 +1285,26 @@ def create_app(
             if delay_s:
                 await asyncio.sleep(delay_s)
             try:
-                return await VercelAIAdapter[AdvisorDeps, str].dispatch_request(
+                response = await VercelAIAdapter[AdvisorDeps, str].dispatch_request(
                     request,
                     agent=agent,
                     model=model_ref,
                     deps=deps,
                 )
+                # Die Antwort streamt: der eigentliche Agenten-Lauf (inkl. Tool-Aufrufen,
+                # die `deps` mutieren) passiert erst, während Starlette den Body NACH
+                # dieser Funktion ausliefert – ein `finally` hier würde zu früh
+                # persistieren. Ein Background-Task läuft dagegen garantiert erst,
+                # nachdem die komplette Antwort gesendet wurde.
+                vorheriger_task = response.background
+
+                async def _persistieren_nach_stream(vorheriger: Any = vorheriger_task) -> None:
+                    if vorheriger is not None:
+                        await vorheriger()
+                    sessions.speichere(chat_id)
+
+                response.background = BackgroundTask(_persistieren_nach_stream)
+                return response
             except Exception as e:  # noqa: BLE001
                 last_error = e
                 err_str = str(e)
@@ -1021,6 +1320,11 @@ def create_app(
                         "502",
                         "503",
                         "504",
+                        # Bekannter, intermittierender Gemini-Fehler bei mehrstufigen
+                        # Tool-Calls über LiteLLM/Vertex AI (v. a. Preview-Modelle):
+                        # dieselbe Anfrage schlägt mal fehl, mal nicht – ein erneuter
+                        # Versuch behebt es oft, ist aber kein sicherer Fix.
+                        "thought signature",
                     )
                 )
                 if attempt < 4 and retryable:
@@ -1041,6 +1345,13 @@ def create_app(
                 elif "timed out" in err_str.lower() or "timeout" in err_str.lower():
                     status = 504
                     user_msg = "Anfrage an Modell hat zu lange gedauert. Bitte erneut versuchen."
+                elif "thought signature" in err_str.lower():
+                    status = 502
+                    user_msg = (
+                        "Bekanntes, unregelmäßiges Problem des Gemini-Modells bei mehrstufigen "
+                        "Tool-Aufrufen (auch nach mehreren Versuchen). Bitte erneut senden oder "
+                        "auf ein anderes Modell wechseln."
+                    )
                 elif "BadRequestError" in err_str or "400" in err_str:
                     status = 400
                     user_msg = "Ungültige Anfrage an das Modell (400). Bitte Eingabe prüfen."
@@ -1048,11 +1359,16 @@ def create_app(
                 print("Model proxy error:", file=sys.stderr)
                 print(traceback.format_exc(), file=sys.stderr)
 
+                # Nicht-streamende Fehlerantwort: der Agenten-Lauf ist an dieser
+                # Stelle bereits vollständig beendet (fehlgeschlagen), etwaige
+                # Tool-Mutationen vor dem Fehler liegen also schon vor.
+                sessions.speichere(chat_id)
                 return JSONResponse({"error": user_msg, "detail": err_str}, status_code=status)
 
         if last_error is not None:
             print("Unexpected model error fallback:", file=sys.stderr)
             print(traceback.format_exc(), file=sys.stderr)
+            sessions.speichere(chat_id)
             return JSONResponse(
                 {"error": "Unbekannter Modellfehler.", "detail": str(last_error)},
                 status_code=502,

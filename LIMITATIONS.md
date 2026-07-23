@@ -42,11 +42,16 @@ er endet bewusst bei der Strategie und deren Begründung.
 
 ## Technische Einschränkungen
 
-- **Session-State nur im Arbeitsspeicher:** Jede Konversation hat ihr eigenes
-  Profil (`webapp.py::SessionStore`, Verdrängung nach 200 Sitzungen), aber es
-  gibt kein Persistenz-Backend: Ein Server-Neustart leert alle Profile, und
-  die Zuordnung hängt an der Chat-ID des Browsers (Chat gelöscht = Profil
-  weg). SQLite-Persistenz ist als Roadmap-Punkt dokumentiert.
+- **Session-State in SQLite, In-Memory-Cache begrenzt:** Jede Konversation hat
+  ihr eigenes Profil (`webapp.py::SessionStore`), das in einer lokalen
+  SQLite-Datei (`advisor_sessions.db`, Pfad über `ADVISOR_DB_PATH`
+  konfigurierbar) gespiegelt wird – ein Server-Neustart leert die Profile
+  nicht mehr. Der In-Memory-Cache bleibt auf 200 gleichzeitige Sitzungen
+  begrenzt (ältere werden verdrängt, aber bei erneutem Zugriff aus SQLite
+  nachgeladen). Die Zuordnung hängt weiterhin an der Chat-ID des Browsers
+  (Chat in der UI gelöscht = Profil nicht mehr auffindbar, auch wenn der
+  Datensatz in SQLite bestehen bleibt); die Datei wächst unbegrenzt (kein
+  automatisches Aufräumen alter Sitzungen).
 - **Keine Authentifizierung:** Wird der Server im Netzwerk freigegeben, kann
   jeder mit der URL den Bot und den hinterlegten LLM-Key nutzen. Für den
   Hochschulkontext akzeptiert; für mehr bräuchte es Login/Rate-Limiting.

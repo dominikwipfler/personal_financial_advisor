@@ -215,9 +215,33 @@ class AdvisorDeps:
     letztes_risiko: dict[str, Any] | None = None
     letzte_strategie: dict[str, Any] | None = None
     letzter_umschichtungsplan: dict[str, Any] | None = None
+    # Ein Eintrag pro Risikoberechnung dieser Konversation (Reihenfolge = Verlauf),
+    # fürs Verlaufs-Chart der Web-UI; siehe webapp.py::_session_state.
+    risiko_verlauf: list[dict[str, Any]] = field(default_factory=list)
 
     def reset(self) -> None:
         self.profile = UserProfile()
         self.letztes_risiko = None
         self.letzte_strategie = None
         self.letzter_umschichtungsplan = None
+        self.risiko_verlauf = []
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-taugliche Momentaufnahme (für die SQLite-Persistenz in webapp.py)."""
+        return {
+            "profile": self.profile.model_dump(mode="json"),
+            "letztes_risiko": self.letztes_risiko,
+            "letzte_strategie": self.letzte_strategie,
+            "letzter_umschichtungsplan": self.letzter_umschichtungsplan,
+            "risiko_verlauf": self.risiko_verlauf,
+        }
+
+    @classmethod
+    def from_dict(cls, daten: dict[str, Any]) -> AdvisorDeps:
+        return cls(
+            profile=UserProfile.model_validate(daten.get("profile") or {}),
+            letztes_risiko=daten.get("letztes_risiko"),
+            letzte_strategie=daten.get("letzte_strategie"),
+            letzter_umschichtungsplan=daten.get("letzter_umschichtungsplan"),
+            risiko_verlauf=daten.get("risiko_verlauf") or [],
+        )

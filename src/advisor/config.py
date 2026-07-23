@@ -47,6 +47,11 @@ REASONING_EFFORT = os.environ.get("ADVISOR_REASONING_EFFORT", "").strip().lower(
 REQUEST_TIMEOUT_S = float(os.environ.get("ADVISOR_REQUEST_TIMEOUT_S", "") or 120)
 MAX_TOKENS = int(os.environ.get("ADVISOR_MAX_TOKENS", "") or 6000)
 
+# SQLite-Datei für die Profil-Persistenz (siehe webapp.py::SessionStore) – ein
+# Server-Neustart leert die Profile dadurch nicht mehr; Pfad relativ zum
+# Arbeitsverzeichnis, aus dem der Server gestartet wird (Projekt-Root laut README).
+DB_PATH = os.environ.get("ADVISOR_DB_PATH", "").strip() or "advisor_sessions.db"
+
 
 def get_litellm_supported_models(timeout_s: float = 5.0) -> list[str]:
     """Modell-IDs vom konfigurierten LiteLLM-Server abrufen (GET /v1/models).

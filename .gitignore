@@ -9,6 +9,10 @@ build/
 # Umgebungsvariablen / Secrets
 .env
 
+# Persistierte Nutzerprofile (SQLite, siehe advisor/config.py::DB_PATH)
+advisor_sessions.db
+advisor_sessions.db-*
+
 # Tooling-Caches
 .ruff_cache/
 .pytest_cache/
