@@ -1327,7 +1327,7 @@ def create_app(
                         "thought signature",
                     )
                 )
-                if attempt < 4 and retryable:
+                if attempt <= len(_CHAT_RETRY_DELAYS_S) and retryable:
                     print(f"Model request failed (attempt {attempt}); retrying...", file=sys.stderr)
                     print(traceback.format_exc(), file=sys.stderr)
                     continue
@@ -1365,14 +1365,17 @@ def create_app(
                 sessions.speichere(chat_id)
                 return JSONResponse({"error": user_msg, "detail": err_str}, status_code=status)
 
-        if last_error is not None:
-            print("Unexpected model error fallback:", file=sys.stderr)
-            print(traceback.format_exc(), file=sys.stderr)
-            sessions.speichere(chat_id)
-            return JSONResponse(
-                {"error": "Unbekannter Modellfehler.", "detail": str(last_error)},
-                status_code=502,
-            )
+        # Praktisch unerreichbar (die Schleife kehrt in jedem Zweig zurück), aber
+        # als Sicherheitsnetz: die Route muss immer eine Response liefern.
+        print("Unexpected model error fallback:", file=sys.stderr)
+        sessions.speichere(chat_id)
+        return JSONResponse(
+            {
+                "error": "Unbekannter Modellfehler.",
+                "detail": str(last_error) if last_error else "keine Antwort vom Modell",
+            },
+            status_code=502,
+        )
 
     api = Starlette(
         routes=[

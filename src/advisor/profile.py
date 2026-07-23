@@ -201,9 +201,9 @@ PFLICHTANGABEN: list[str] = [
 class AdvisorDeps:
     """Dependencies des Agenten: hält das Nutzerprofil als Session-State.
 
-    Hinweis: `agent.to_web(deps=...)` verwendet dasselbe Deps-Objekt für alle
-    Requests des Server-Prozesses. Für den vorgesehenen Einsatz (lokale
-    Einzelnutzer-App) ist das ausreichend; siehe LIMITATIONS.md.
+    Pro Konversation existiert ein eigenes AdvisorDeps-Objekt; die Zuordnung
+    Chat-ID → Deps und die SQLite-Persistenz übernimmt
+    `webapp.py::SessionStore` (siehe auch LIMITATIONS.md).
 
     `letztes_risiko`, `letzte_strategie` und `letzter_umschichtungsplan`
     spiegeln lediglich die letzten Tool-Ergebnisse der Konversation (für die

@@ -22,11 +22,20 @@ Prozent, Produktvorschlägen, Sparplan-Aufteilung und Begründung je Baustein.
   maximal tragbare zwischenzeitliche Verlusthöhe ab. Risikobereitschaft
   (subjektiv) und Risikotragfähigkeit (objektiv) werden getrennt bewertet;
   die schwächere Dimension begrenzt (Vorsichtsprinzip).
-- **Session-State pro Konversation** – jedes Gespräch (Chat in der UI) hat
-  sein eigenes serverseitiges Profil: bereits beantwortete Fragen werden nicht
-  erneut gestellt, ein neuer Chat startet mit leerem Profil, und mehrere
-  Personen können den Server gleichzeitig nutzen, ohne sich die Profile zu
-  teilen.
+- **Session-State pro Konversation, SQLite-persistiert** – jedes Gespräch
+  (Chat in der UI) hat sein eigenes serverseitiges Profil: bereits beantwortete
+  Fragen werden nicht erneut gestellt, ein neuer Chat startet mit leerem
+  Profil, und mehrere Personen können den Server gleichzeitig nutzen, ohne
+  sich die Profile zu teilen. Die Profile werden in `advisor_sessions.db`
+  gespiegelt und überleben Server-Neustarts.
+- **Beratungsstatus, Eingabe-Formular und Export in der UI** – ein Panel zeigt
+  jederzeit die aktuelle Phase (Profil → Risiko → Strategie → abgeschlossen),
+  die erfassten Angaben, eine Risiko-Skala und den Verlauf der Risikoklasse im
+  Gespräch. Eckdaten lassen sich alternativ über ein Formular (inkl.
+  Risiko-Regler) statt im Dialog erfassen, und die fertige Beratung ist als
+  Markdown bzw. PDF (Druckansicht) exportierbar – inklusive Disclaimer.
+  Während der Profilierung zeigt der Bot eine Fortschrittsanzeige (x/13
+  Angaben), die deterministisch berechnet wird.
 - **Aktuelle Web-Recherche mit Marktlage-Check und Emittenten-Prüfung** –
   Websuche und Nachrichten-Suche (DuckDuckGo/Bing/Brave, ohne API-Key,
   mit Datum und Quelle), Seiten-Abruf und Marktdaten von Yahoo Finance.
@@ -58,39 +67,50 @@ Prozent, Produktvorschlägen, Sparplan-Aufteilung und Begründung je Baustein.
 ## Architektur
 
 Basis ist das **chatbot-pydanticai-template** (Begründung siehe
-[Entscheidungen](#entscheidungen)): ein Pydantic-AI-Agent, der über
-`agent.to_web()` die offizielle Pydantic AI Chat UI ausliefert.
+[Entscheidungen](#entscheidungen)): ein Pydantic-AI-Agent, der die offizielle
+Pydantic AI Chat UI ausliefert. Statt `agent.to_web()` (nur *ein* geteiltes
+Deps-Objekt für alle Requests) nutzt das Projekt eine eigene Web-Schicht
+[`webapp.py`](src/advisor/webapp.py) auf demselben `VercelAIAdapter` – damit
+bekommt jede Konversation ihr eigenes, in SQLite persistiertes Profil.
 
 ```mermaid
 flowchart TB
     subgraph Browser
-        UI["Pydantic AI Chat UI<br/>(React, via CDN, Streaming)"]
+        UI["Pydantic AI Chat UI (React, CDN, Streaming)<br/>+ eigene Ergänzungen: Beratungsstatus-Panel,<br/>Eingabe-Formular, Export, Fehler-Banner"]
     end
 
-    subgraph Server["Starlette-App (uvicorn) – advisor.app"]
-        AGENT["Pydantic-AI-Agent<br/>advisor.agent<br/>System-Prompt: advisor.prompts<br/>(Phasen: Profiling → Risiko → Recherche → Strategie)"]
+    subgraph Server["Starlette-App (uvicorn) – advisor.app / advisor.webapp"]
+        AGENT["Pydantic-AI-Agent<br/>advisor.agent<br/>System-Prompt: advisor.prompts<br/>(Phasen: Profiling → Risiko → Recherche →<br/>Strategie → Umschichtung)"]
+        STORE["SessionStore – advisor.webapp<br/>Chat-ID → eigenes AdvisorDeps"]
         DEPS["AdvisorDeps (Session-State)<br/>UserProfile – advisor.profile"]
 
-        subgraph Tools
-            T1["speichere_profil /<br/>zeige_profil /<br/>profil_zuruecksetzen"]
+        subgraph Tools["Tools (11)"]
+            T1["speichere_profil /<br/>speichere_profil_mehrere /<br/>zeige_profil / profil_zuruecksetzen"]
             T2["ermittle_risikoprofil_tool<br/>(advisor.risk)"]
             T3["erstelle_strategie_tool<br/>(advisor.strategy)"]
-            T4["web_suche / lese_webseite /<br/>marktdaten (advisor.research)"]
+            T5["erstelle_umschichtungsplan_tool<br/>(advisor.rebalancing)"]
+            T4["web_suche / nachrichten_suche /<br/>lese_webseite / marktdaten<br/>(advisor.research)"]
         end
     end
 
     subgraph Extern
         LLM["LLM-Provider<br/>(OpenAI direkt oder LiteLLM-Proxy)"]
-        WEB["Web (DuckDuckGo,<br/>justETF & Co.)"]
+        WEB["Web (DuckDuckGo/Bing/Brave,<br/>justETF & Co.)"]
         YF["Yahoo Finance"]
     end
 
+    DB[("SQLite<br/>advisor_sessions.db")]
+
     UI <-->|"Vercel AI Data Stream<br/>/api/chat"| AGENT
+    UI -->|"/api/state, /api/export,<br/>/api/profile"| STORE
     AGENT <--> LLM
-    AGENT --> T1 & T2 & T3 & T4
+    AGENT --> T1 & T2 & T3 & T5 & T4
+    STORE <--> DEPS
+    STORE <--> DB
     T1 <--> DEPS
     T2 <--> DEPS
     T3 <--> DEPS
+    T5 <--> DEPS
     T4 --> WEB
     T4 --> YF
 ```
@@ -98,14 +118,20 @@ flowchart TB
 **UI-Fluss / Beratungsprozess** (angelehnt an den Portfolio-Management-Prozess
 aus dem Finanzmanagement-Skript, Kap. 1&2):
 
-1. **Begrüßung + Disclaimer** → 2. **Profilierung** (eine Frage pro Nachricht;
-   jede Antwort wird sofort via `speichere_profil` in den Session-State
-   geschrieben; der aktuelle Profilstand wird dem Agenten in jede Anfrage
-   injiziert, sodass nichts doppelt gefragt wird) → 3. **Risikoprofil**
+1. **Begrüßung + Disclaimer** (optional vorab: Eckdaten über das
+   Eingabe-Formular der UI erfassen) → 2. **Profilierung** (eine Frage pro
+   Nachricht; jede Antwort wird sofort via `speichere_profil` bzw.
+   `speichere_profil_mehrere` in den Session-State geschrieben; der aktuelle
+   Profilstand wird dem Agenten in jede Anfrage injiziert, sodass nichts
+   doppelt gefragt wird; Fortschrittsanzeige x/13) → 3. **Risikoprofil**
    (Berechnung + verständliche Erklärung, Bestätigung durch Nutzer) →
-   4. **Recherche** (aktuelle ETFs/Produkte, Kosten, Marktdaten) →
-   5. **Strategie** (Allokation, Produkte, Sparplan, Begründungen, Hinweise,
-   Disclaimer) → 6. **Rückfragen/Anpassungen** (Profilupdates → Neuberechnung).
+   4. **Recherche** (Marktlage-Check, aktuelle ETFs/Produkte, Kosten,
+   Marktdaten, Emittenten-Prüfung) → 5. **Strategie** (Allokation, Produkte,
+   Sparplan, Begründungen, Hinweise, Disclaimer) → 6. **Umschichtung**
+   (bei Bestandsdepot: Kauf-/Verkaufsplan mit Gebühren und Steuerschätzung) →
+   7. **Rückfragen/Anpassungen** (Profilupdates → Neuberechnung).
+   Der jeweilige Stand ist jederzeit im **Beratungsstatus-Panel** sichtbar und
+   als Markdown/PDF exportierbar.
 
 ### Modulübersicht
 
@@ -168,7 +194,7 @@ Projekt direkt unterstützt:
    USE_LITELLM=1
    LITELLM_SERVER_URL=https://llm.hka-cloud.de
    LITELLM_API_KEY=sk-...
-   LITELLM_MODEL=gpt-4o        # eine Modell-ID aus der Liste des Servers
+   LITELLM_MODEL=gemini-3-flash-preview   # Modell-ID aus der Liste des Servers
    ```
 
 3. Verfügbare Modelle prüfen (UI → „Models“ oder):
@@ -222,9 +248,10 @@ Tunnel (z. B. `cloudflared tunnel --url http://localhost:8000`).
 
 **Hinweise:** Es gibt keine Anmeldung – jeder mit der URL kann den Bot (und
 damit den hinterlegten LLM-Key) nutzen; nur im privaten Netz bzw. mit
-vertrauenswürdigen Personen teilen. Profile leben im Arbeitsspeicher: ein
-Server-Neustart leert sie, und wer einen Chat löscht, verliert das zugehörige
-Profil.
+vertrauenswürdigen Personen teilen. Die Profile liegen in einer gemeinsamen
+SQLite-Datei auf dem Server und überleben Neustarts; die Zuordnung hängt aber
+an der Chat-ID im Browser: Wer seinen Chat in der UI löscht, findet das
+zugehörige Profil nicht wieder (siehe [LIMITATIONS.md](LIMITATIONS.md)).
 
 ### Nutzung
 
@@ -325,8 +352,13 @@ Konfigurations-/Key-Management-Pattern (inkl. optionalem LiteLLM-Betrieb).
 
 ## Verbesserungsvorschläge / Roadmap
 
-Sinnvolle Erweiterungen, grob nach Nutzen sortiert (bewusst noch nicht
-umgesetzt, um den Kern schlank und geprüft zu halten):
+**Bereits umgesetzt** (standen ursprünglich auf dieser Liste): Profil-Persistenz
+in SQLite (überlebt Server-Neustarts), Strategie-Export als Markdown bzw. PDF
+über die Druckansicht, Beratungsstatus-Panel mit Risiko-Verlauf und das
+Eingabe-Formular als Alternative zum reinen Dialog.
+
+**Offen**, grob nach Nutzen sortiert (bewusst noch nicht umgesetzt, um den Kern
+schlank und geprüft zu halten):
 
 1. **Zielprojektion/Monte-Carlo-Simulation:** „Reichen 350 €/Monat für Betrag X
    mit 67?" – deterministische Simulation der Sparziele mit Unsicherheitsband
@@ -337,19 +369,18 @@ umgesetzt, um den Kern schlank und geprüft zu halten):
 3. **Bessere Produktdatenquellen:** justETF/extraETF liefern TER, Volumen und
    Replikation strukturierter als Yahoo Finance – ein dediziertes
    ETF-Daten-Tool würde die Produktvorschläge robuster machen.
-
-Bereits umgesetzt: Profil-Persistenz (SQLite, überlebt Server-Neustarts) und
-Strategie-Export (Markdown-Download bzw. PDF über die Druckansicht) – siehe
-Beratungsstatus-Panel in der Web-UI.
-6. **Feinere Steuerschätzung:** Trennung der Verlustverrechnungstöpfe
+4. **Feinere Steuerschätzung:** Trennung der Verlustverrechnungstöpfe
    (Aktien vs. Sonstige), FIFO bei Teilverkäufen, Anrechnung versteuerter
    Vorabpauschalen.
+5. **Automatisches Aufräumen alter Sitzungen** in der SQLite-Datei und
+   optionale Authentifizierung für den Netzwerkbetrieb.
 
 ## Nicht umgesetzt / Einschränkungen
 
 Siehe [LIMITATIONS.md](LIMITATIONS.md) – u. a. kein Bank-Connector (bewusst,
-Regulatorik/Sicherheit), keine Zulassung als Anlageberatung, Session-State pro
-Serverprozess, Grenzen der schlüssellosen Datenquellen.
+Regulatorik/Sicherheit), keine Zulassung als Anlageberatung, vereinfachte
+Steuerschätzung, keine Authentifizierung und Grenzen der schlüssellosen
+Datenquellen.
 
 ## Lizenz / Kontext
 
