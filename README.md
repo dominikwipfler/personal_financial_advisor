@@ -74,46 +74,39 @@ Deps-Objekt für alle Requests) nutzt das Projekt eine eigene Web-Schicht
 bekommt jede Konversation ihr eigenes, in SQLite persistiertes Profil.
 
 ```mermaid
-flowchart TB
-    subgraph Browser
-        UI["Pydantic AI Chat UI (React, CDN, Streaming)<br/>+ eigene Ergänzungen: Beratungsstatus-Panel,<br/>Eingabe-Formular, Export, Fehler-Banner"]
+flowchart LR
+    UI["Browser<br/>Pydantic AI Chat UI (Streaming)<br/>plus Beratungsstatus,<br/>Eingabe-Formular, Export"]
+
+    subgraph SERVER["Server (Starlette / uvicorn)"]
+        direction TB
+        AGENT["Agent (advisor.agent + prompts)<br/>Dialogphasen: Profil, Risiko,<br/>Recherche, Strategie, Umschichtung"]
+        TOOLS["11 Tools"]
+        LOGIK["Deterministische Fachlogik<br/>risk.py, strategy.py, rebalancing.py"]
+        STORE["SessionStore (advisor.webapp)<br/>ein Profil je Konversation"]
+        DB[("SQLite<br/>advisor_sessions.db")]
     end
 
-    subgraph Server["Starlette-App (uvicorn) – advisor.app / advisor.webapp"]
-        AGENT["Pydantic-AI-Agent<br/>advisor.agent<br/>System-Prompt: advisor.prompts<br/>(Phasen: Profiling → Risiko → Recherche →<br/>Strategie → Umschichtung)"]
-        STORE["SessionStore – advisor.webapp<br/>Chat-ID → eigenes AdvisorDeps"]
-        DEPS["AdvisorDeps (Session-State)<br/>UserProfile – advisor.profile"]
-
-        subgraph Tools["Tools (11)"]
-            T1["speichere_profil /<br/>speichere_profil_mehrere /<br/>zeige_profil / profil_zuruecksetzen"]
-            T2["ermittle_risikoprofil_tool<br/>(advisor.risk)"]
-            T3["erstelle_strategie_tool<br/>(advisor.strategy)"]
-            T5["erstelle_umschichtungsplan_tool<br/>(advisor.rebalancing)"]
-            T4["web_suche / nachrichten_suche /<br/>lese_webseite / marktdaten<br/>(advisor.research)"]
-        end
+    subgraph EXTERN["Externe Dienste"]
+        direction TB
+        LLM["LLM-Provider<br/>LiteLLM-Proxy (HKA)<br/>oder OpenAI"]
+        NET["Recherche und Marktdaten<br/>DuckDuckGo/Bing/Brave,<br/>Yahoo Finance"]
     end
 
-    subgraph Extern
-        LLM["LLM-Provider<br/>(OpenAI direkt oder LiteLLM-Proxy)"]
-        WEB["Web (DuckDuckGo/Bing/Brave,<br/>justETF & Co.)"]
-        YF["Yahoo Finance"]
-    end
-
-    DB[("SQLite<br/>advisor_sessions.db")]
-
-    UI <-->|"Vercel AI Data Stream<br/>/api/chat"| AGENT
-    UI -->|"/api/state, /api/export,<br/>/api/profile"| STORE
+    UI <-->|"/api/chat"| AGENT
+    UI -->|"/api/state<br/>/api/export<br/>/api/profile"| STORE
+    AGENT -->|"Tool-Aufrufe"| TOOLS
     AGENT <--> LLM
-    AGENT --> T1 & T2 & T3 & T5 & T4
-    STORE <--> DEPS
+    TOOLS -->|"berechnet alle Zahlen"| LOGIK
+    TOOLS --> NET
+    TOOLS <-->|"Profil"| STORE
     STORE <--> DB
-    T1 <--> DEPS
-    T2 <--> DEPS
-    T3 <--> DEPS
-    T5 <--> DEPS
-    T4 --> WEB
-    T4 --> YF
 ```
+
+Die **11 Tools** im Detail: vier zum Profil (`speichere_profil`,
+`speichere_profil_mehrere`, `zeige_profil`, `profil_zuruecksetzen`), drei für
+die Berechnungen (`ermittle_risikoprofil_tool`, `erstelle_strategie_tool`,
+`erstelle_umschichtungsplan_tool`) und vier für die Recherche (`web_suche`,
+`nachrichten_suche`, `lese_webseite`, `marktdaten`).
 
 **UI-Fluss / Beratungsprozess** (angelehnt an den Portfolio-Management-Prozess
 aus dem Finanzmanagement-Skript, Kap. 1&2):
