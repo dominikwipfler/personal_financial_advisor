@@ -36,9 +36,13 @@ def _strategische_allokation(risiko: RisikoErgebnis, p: UserProfile) -> dict[str
     """
     aktien = risiko.aktienquote_empfohlen
 
+    # Gold nur beimischen, soweit neben der Aktienquote überhaupt Platz ist.
+    # Ohne diese Begrenzung entstünden bei einer Aktienquote von 100 %
+    # (Risikoklasse 5 ohne Kappungen) negative Anleihen-/Geldmarkt-Anteile.
     gold = 0.05 if (risiko.risikoklasse >= 3 and aktien >= 0.4) else 0.0
+    gold = min(gold, max(0.0, 1.0 - aktien))
 
-    rest = 1.0 - aktien - gold
+    rest = max(0.0, 1.0 - aktien - gold)
     # Defensiver Block: je kürzer der Horizont, desto mehr Geldmarkt/Tagesgeld
     # statt Anleihen (Liquiditätsziel, Kap. 1&2).
     horizont = p.zeithorizont_jahre or 0
@@ -62,6 +66,10 @@ def _strategische_allokation(risiko: RisikoErgebnis, p: UserProfile) -> dict[str
     }
     if gold > 0:
         allokation["gold"] = gold
+
+    # Sicherheitsnetz: Bausteine mit Anteil 0 (oder minimal negativ durch
+    # Rundung) gar nicht erst ausweisen – eine Allokation darf nie negativ sein.
+    allokation = {k: v for k, v in allokation.items() if v > 0.0001}
 
     # Rundungsdifferenzen auf den größten Baustein schieben.
     diff = round(1.0 - sum(allokation.values()), 4)

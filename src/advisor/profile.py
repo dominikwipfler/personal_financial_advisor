@@ -13,7 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 # Verständlich formulierte Antwortoptionen statt bloßem "hoch/mittel/niedrig":
 # Reaktion auf einen hypothetischen Kursverlust von 20 % (Stresstest-Gedanke,
@@ -65,6 +65,41 @@ def _normiere_reaktion(wert: str) -> str:
     if "verkauf" in s:
         return "alles_verkaufen"
     return wert
+
+
+# Begriffe, die auf Konsum-/Ratenschulden hindeuten (Tilgung hat Vorrang vor
+# dem Investieren). Immobilienkredite zählen bewusst NICHT dazu: sie sind
+# niedrig verzinst und langfristig, eine Sondertilgung schlägt die Geldanlage
+# dort in der Regel nicht.
+_KONSUMSCHULDEN_BEGRIFFE = (
+    "konsumkredit", "ratenkredit", "raten", "dispo", "überziehung", "ueberziehung",
+    "kreditkarte", "autokredit", "autofinanzierung", "privatkredit", "bafög", "bafoeg",
+    "studienkredit", "schulden bei", "0 prozent finanzierung", "null prozent",
+)
+_KEINE_SCHULDEN_BEGRIFFE = ("keine", "nein", "keinerlei", "schuldenfrei", "-", "0", "none")
+_IMMOBILIEN_BEGRIFFE = ("immobilie", "hypothek", "baufinanzierung", "baukredit", "hauskredit", "eigenheim")
+
+
+def _leite_konsumschulden_ab(schulden: str) -> bool | None:
+    """Aus dem Freitext zu Schulden ableiten, ob Konsumschulden bestehen.
+
+    Gibt None zurück, wenn der Text keine eindeutige Aussage zulässt.
+    """
+    s = _normiere(schulden)
+    if not s:
+        return None
+    if any(b in s for b in _KONSUMSCHULDEN_BEGRIFFE):
+        return True
+    if any(s == b or s.startswith(b + " ") or s == b + "." for b in _KEINE_SCHULDEN_BEGRIFFE):
+        return False
+    if any(b in s for b in _KEINE_SCHULDEN_BEGRIFFE) and not any(
+        b in s for b in _IMMOBILIEN_BEGRIFFE
+    ):
+        return False
+    if any(b in s for b in _IMMOBILIEN_BEGRIFFE):
+        # Nur Immobilienkredit genannt -> keine Konsumschulden.
+        return False
+    return None
 
 
 def _normiere_bool(wert: str) -> str | bool:
@@ -162,6 +197,22 @@ class UserProfile(BaseModel):
     @classmethod
     def _v_bool(cls, v: object) -> object:
         return _normiere_bool(v) if isinstance(v, str) else v
+
+    @model_validator(mode="after")
+    def _leite_hat_konsumschulden_ab(self) -> UserProfile:
+        """`hat_konsumschulden` aus dem Freitext `schulden` ergänzen.
+
+        Das Feld steuert eine harte Kappung der Aktienquote (`risk.py`), wird
+        aber nicht separat abgefragt. Ohne diese Ableitung hinge die Kappung
+        davon ab, ob das Sprachmodell beide Felder gesetzt hat. Eine bereits
+        vorhandene explizite Angabe wird nie überschrieben.
+        """
+        if self.hat_konsumschulden is None and self.schulden:
+            abgeleitet = _leite_konsumschulden_ab(self.schulden)
+            if abgeleitet is not None:
+                # Direkt setzen statt model_copy: Validator läuft sonst erneut.
+                object.__setattr__(self, "hat_konsumschulden", abgeleitet)
+        return self
 
     def fehlende_angaben(self) -> list[str]:
         """Noch nicht erfragte Pflichtangaben, in sinnvoller Frage-Reihenfolge."""

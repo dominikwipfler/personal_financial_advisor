@@ -110,6 +110,31 @@ def test_neue_konversation_bekommt_eigenes_profil():
     assert sessions.get("chat-2").profile.anlageziel == "Hauskauf"
 
 
+def test_export_dateiname_wird_bereinigt():
+    """Regression: Die Chat-ID landet im Content-Disposition-Header.
+
+    Anführungszeichen oder Zeilenumbrüche darin könnten den Header zerlegen
+    bzw. weitere Header einschleusen.
+    """
+    app = create_app(agent)
+    client = TestClient(app)
+    antwort = client.get('/api/export/abc%22evil%22')
+    disposition = antwort.headers["content-disposition"]
+    assert disposition == 'attachment; filename="beratung-abcevil.md"'
+    assert '"evil"' not in disposition
+
+
+def test_druckansicht_escaped_html_aus_profilfeldern():
+    """Profilangaben dürfen in der Druckansicht nicht als HTML ausgeführt werden."""
+    app = create_app(agent)
+    client = TestClient(app)
+    chat = "escape-test"
+    client.post(f"/api/profile/{chat}", json={"anlageziel": "<img src=x onerror=alert(1)>"})
+    koerper = client.get(f"/api/export/{chat}?format=html").text.split("<body>")[1]
+    assert "<img" not in koerper
+    assert "&lt;img" in koerper
+
+
 def test_health_und_configure_endpunkte():
     app = create_app(agent)
     client = TestClient(app)

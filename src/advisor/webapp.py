@@ -180,6 +180,17 @@ def _export_markdown(deps: AdvisorDeps) -> str:
     return "\n".join(zeilen) + "\n"
 
 
+def _dateiname(chat_id: str) -> str:
+    """Chat-ID auf einen unbedenklichen Dateinamen reduzieren.
+
+    Die ID kommt aus der URL und landet im `Content-Disposition`-Header.
+    Ohne Filterung könnten Anführungszeichen den Header zerlegen bzw.
+    Zeilenumbrüche weitere Header einschleusen (Response-Splitting).
+    """
+    sauber = "".join(z for z in chat_id if z.isalnum() or z in "-_")
+    return sauber[:60] or "export"
+
+
 def _export_print_html(markdown: str) -> str:
     """Druckfreundliche HTML-Ansicht der Export-Zusammenfassung ('Als PDF speichern')."""
     escaped = (
@@ -1260,7 +1271,9 @@ def create_app(
         return PlainTextResponse(
             markdown,
             media_type="text/markdown; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="beratung-{chat_id}.md"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="beratung-{_dateiname(chat_id)}.md"'
+            },
         )
 
     async def options_chat(request: Request) -> Response:

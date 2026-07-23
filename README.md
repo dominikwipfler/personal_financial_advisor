@@ -349,6 +349,14 @@ Konfigurations-/Key-Management-Pattern (inkl. optionalem LiteLLM-Betrieb).
   Langfristwerte (Aktien 7 % p. a. / σ 16 %, Anleihen 2,5 % p. a. / σ 5 %,
   ρ = 0,2), im Code dokumentiert und leicht änderbar; siehe auch
   [LIMITATIONS.md](LIMITATIONS.md).
+- **Fachlogik unabhängig von der Sorgfalt des Sprachmodells:** Sicherheits-
+  relevante Felder werden aus dem Dialog abgeleitet statt darauf zu vertrauen,
+  dass das LLM sie mitspeichert. Beispiel `hat_konsumschulden`: Das Feld
+  steuert eine harte Kappung der Aktienquote, wird aber nicht separat
+  abgefragt – ein Validator leitet es aus dem Freitext zu den Schulden ab
+  („Ratenkredit" → ja, „keine" → nein). Immobilienkredite zählen bewusst
+  nicht als Konsumschulden, da eine Sondertilgung dort die Geldanlage in der
+  Regel nicht schlägt.
 
 ## Verbesserungsvorschläge / Roadmap
 

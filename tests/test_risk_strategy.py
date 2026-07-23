@@ -63,6 +63,63 @@ def test_strategie_summen_konsistent():
     assert all(v >= 25 for v in s["sparplan_aufteilung_eur"].values())
 
 
+def test_maximale_aktienquote_erzeugt_keine_negativen_anteile():
+    """Regression: Bei 100 % Aktienquote durfte Gold nicht 'obendrauf' kommen.
+
+    Sonst entstanden negative Anleihen-/Geldmarkt-Anteile (z. B. -4,5 %),
+    die in Sparplan und Einmalbetrag als negative Beträge auftauchten.
+    """
+    p = _profil_offensiv().model_copy(
+        update={
+            "anlageerfahrung": "sehr_erfahren",
+            "reaktion_kursverlust_20_prozent": "nachkaufen",
+            "max_akzeptierter_verlust_prozent": 50.0,
+        }
+    )
+    r = ermittle_risikoprofil(p)
+    assert r.risikoklasse == 5
+    assert r.aktienquote_empfohlen == 1.0
+
+    s = erstelle_strategie(p, r)
+    assert all(v >= 0 for v in s["allokation_prozent"].values())
+    assert all(v >= 0 for v in s["sparplan_aufteilung_eur"].values())
+    assert all(v >= 0 for v in s["einmalbetrag_aufteilung_eur"].values())
+    assert abs(sum(s["allokation_prozent"].values()) - 100) < 0.2
+
+
+def _profil_mit(**aenderungen) -> UserProfile:
+    """Profil über `model_validate` bauen – wie die Tools es im Betrieb tun.
+
+    Wichtig: `model_copy()` umgeht in Pydantic v2 die Validatoren und damit
+    auch die Ableitung von `hat_konsumschulden`.
+    """
+    daten = _profil_offensiv().model_dump()
+    daten.update(aenderungen)
+    return UserProfile.model_validate(daten)
+
+
+def test_konsumschulden_werden_aus_freitext_abgeleitet():
+    """Regression: Die Schulden-Kappung darf nicht davon abhängen, ob das
+    Sprachmodell zusätzlich zum Freitext auch das Boolean gesetzt hat."""
+    mit_kredit = _profil_mit(schulden="Ratenkredit über 5.000 €", hat_konsumschulden=None)
+    assert mit_kredit.hat_konsumschulden is True
+    r = ermittle_risikoprofil(mit_kredit)
+    assert r.aktienquote_empfohlen <= 0.30
+    assert any("Konsumschulden" in b for b in r.begrenzungen)
+
+
+def test_immobilienkredit_gilt_nicht_als_konsumschuld():
+    p = _profil_mit(schulden="Immobilienkredit fürs Eigenheim", hat_konsumschulden=None)
+    assert p.hat_konsumschulden is False
+    r = ermittle_risikoprofil(p)
+    assert not any("Konsumschulden" in b for b in r.begrenzungen)
+
+
+def test_explizite_angabe_wird_nicht_ueberschrieben():
+    p = _profil_mit(schulden="keine nennenswerten", hat_konsumschulden=True)
+    assert p.hat_konsumschulden is True
+
+
 def test_unvollstaendiges_profil_meldet_offene_angaben():
     p = UserProfile(anlageziel="Vermögensaufbau")
     offen = p.fehlende_angaben()
