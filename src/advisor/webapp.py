@@ -22,11 +22,6 @@ from collections import OrderedDict
 from collections.abc import Mapping
 from datetime import datetime
 
-from starlette.applications import Starlette
-from starlette.requests import Request
-from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
-from starlette.routing import Mount, Route
-
 from pydantic import BaseModel
 from pydantic.alias_generators import to_camel
 from pydantic_ai import Agent
@@ -36,6 +31,10 @@ from pydantic_ai.models import Model, infer_model
 # Bewusst wiederverwendet statt kopiert; Version ist über uv.lock fixiert.
 from pydantic_ai.ui._web.app import _get_ui_html  # pyright: ignore[reportPrivateUsage]
 from pydantic_ai.ui.vercel_ai import VercelAIAdapter
+from starlette.applications import Starlette
+from starlette.requests import Request
+from starlette.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from starlette.routing import Mount, Route
 
 from advisor.profile import PFLICHTANGABEN, AdvisorDeps, UserProfile
 
@@ -919,13 +918,16 @@ def create_app(
 
                 return JSONResponse({"error": user_msg, "detail": err_str}, status_code=status)
 
-        if last_error is not None:
-            print("Unexpected model error fallback:", file=sys.stderr)
-            print(traceback.format_exc(), file=sys.stderr)
-            return JSONResponse(
-                {"error": "Unbekannter Modellfehler.", "detail": str(last_error)},
-                status_code=502,
-            )
+        # Unerreichbar im Normalbetrieb: die Schleife oben deckt jeden Ausgang
+        # (Erfolg oder eine der Fehler-Antworten) bereits per `return` ab.
+        # Explizite Absicherung, damit die Funktion nie implizit `None`
+        # zurückgibt (z. B. falls die Retry-Konstante mal leer wird).
+        print("Unexpected model error fallback:", file=sys.stderr)
+        print(traceback.format_exc(), file=sys.stderr)
+        return JSONResponse(
+            {"error": "Unbekannter Modellfehler.", "detail": str(last_error)},
+            status_code=502,
+        )
 
     api = Starlette(
         routes=[

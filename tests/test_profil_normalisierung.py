@@ -24,7 +24,7 @@ from advisor.profile import UserProfile
     ],
 )
 def test_anlageerfahrung_freitext(eingabe: str, erwartet: str):
-    p = UserProfile(anlageerfahrung=eingabe)  # type: ignore[arg-type]
+    p = UserProfile(anlageerfahrung=eingabe)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     assert p.anlageerfahrung == erwartet
 
 
@@ -44,7 +44,7 @@ def test_anlageerfahrung_freitext(eingabe: str, erwartet: str):
     ],
 )
 def test_verlust_reaktion_freitext(eingabe: str, erwartet: str):
-    p = UserProfile(reaktion_kursverlust_20_prozent=eingabe)  # type: ignore[arg-type]
+    p = UserProfile(reaktion_kursverlust_20_prozent=eingabe)  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
     assert p.reaktion_kursverlust_20_prozent == erwartet
 
 
@@ -60,4 +60,4 @@ def test_deutsche_booleans(eingabe: str, erwartet: bool):
 
 def test_unbrauchbarer_freitext_schlaegt_weiter_fehl():
     with pytest.raises(Exception):
-        UserProfile(anlageerfahrung="banane")  # type: ignore[arg-type]
+        UserProfile(anlageerfahrung="banane")  # type: ignore[arg-type]  # ty: ignore[invalid-argument-type]
