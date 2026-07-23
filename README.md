@@ -219,7 +219,11 @@ Tunnel (z. B. `cloudflared tunnel --url http://localhost:8000`).
 damit den hinterlegten LLM-Key) nutzen; nur im privaten Netz bzw. mit
 vertrauenswürdigen Personen teilen. Profile leben im Arbeitsspeicher: ein
 Server-Neustart leert sie, und wer einen Chat löscht, verliert das zugehörige
-Profil.
+Profil. **Wichtig:** `uvicorn` bewusst ohne `--workers N` starten – jeder
+zusätzliche Worker-Prozess hätte seinen eigenen, getrennten Session-Speicher,
+sodass ein Chat je nach Zufalls-Routing mitten im Gespräch sein Profil
+"verlieren" könnte. Für echte Skalierung braucht es zuerst die
+SQLite-Persistenz aus der Roadmap.
 
 ### Nutzung
 
@@ -328,17 +332,22 @@ umgesetzt, um den Kern schlank und geprüft zu halten):
 2. **Zielprojektion/Monte-Carlo-Simulation:** „Reichen 350 €/Monat für Betrag X
    mit 67?" – deterministische Simulation der Sparziele mit Unsicherheitsband
    würde die Strategie greifbarer machen.
-3. **Strategie-Export:** Ausgabe der fertigen Strategie als Markdown-/PDF-Datei
-   zum Abheften bzw. für die Abgabe.
-4. **Jährlicher Check-up-Modus:** Profil laden, aktuelle Depotwerte abfragen,
+3. **Jährlicher Check-up-Modus:** Profil laden, aktuelle Depotwerte abfragen,
    Rebalancing-Vorschlag – die Bausteine (Profil + Umschichtungs-Engine)
    existieren bereits.
-5. **Bessere Produktdatenquellen:** justETF/extraETF liefern TER, Volumen und
+4. **Bessere Produktdatenquellen:** justETF/extraETF liefern TER, Volumen und
    Replikation strukturierter als Yahoo Finance – ein dediziertes
    ETF-Daten-Tool würde die Produktvorschläge robuster machen.
-6. **Feinere Steuerschätzung:** Trennung der Verlustverrechnungstöpfe
+5. **Feinere Steuerschätzung:** Trennung der Verlustverrechnungstöpfe
    (Aktien vs. Sonstige), FIFO bei Teilverkäufen, Anrechnung versteuerter
    Vorabpauschalen.
+6. **Caching für Markt-/Websuchdaten:** Wiederholte Abfragen desselben
+   Tickers/Suchbegriffs innerhalb einer Beratung (Marktlage-Check, dann
+   Produktprüfung) treffen aktuell immer live auf Yahoo Finance/DuckDuckGo –
+   ein kurzlebiger In-Memory-Cache würde Latenz und Rate-Limit-Risiko senken.
+
+> Bereits umgesetzt (ehemals hier gelistet): Strategie-Export als Markdown/PDF
+> (`/api/export/{chat_id}`, siehe Export-Buttons im Status-Panel).
 
 ## Nicht umgesetzt / Einschränkungen
 
