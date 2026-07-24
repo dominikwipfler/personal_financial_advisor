@@ -751,16 +751,27 @@ def _inject_ui_enhancements(html: str) -> str:
     // würden sowohl die Leerzustand-Maske als auch das Beratungsstatus-Panel
     // (falls offen) weiter die Daten der vorher aktiven Konversation zeigen.
     let letzterPfad = location.pathname;
+    let tickZaehler = 0;
     setInterval(function () {
         applyInputHint();
         positionEmptyOverlay();
+        tickZaehler++;
+
         const pfad = location.pathname.replace(/^\\/+/, '').trim();
-        if (pfad === letzterPfad.replace(/^\\/+/, '').trim()) return;
-        letzterPfad = location.pathname;
-        currentChatId = pfad || 'default';
-        aktualisiereEmptyOverlayFuerAktuellenChat();
+        const pfadGeaendert = pfad !== letzterPfad.replace(/^\\/+/, '').trim();
+        if (pfadGeaendert) {
+            letzterPfad = location.pathname;
+            currentChatId = pfad || 'default';
+            aktualisiereEmptyOverlayFuerAktuellenChat();
+        }
+
+        // Bei Chat-Wechsel sofort aktualisieren; sonst alle ~5s selbstheilend
+        // nachziehen – ein einzelner verpasster Trigger (z. B. Timer-Drosselung
+        // in einem länger im Hintergrund liegenden Tab) darf das Panel nicht
+        // dauerhaft auf einem veralteten Stand einfrieren.
         const offenesPanel = document.getElementById('advisor-panel');
-        if (offenesPanel && offenesPanel.classList.contains('advisor-open')) {
+        const istOffen = offenesPanel && offenesPanel.classList.contains('advisor-open');
+        if (istOffen && (pfadGeaendert || tickZaehler % 5 === 0)) {
             refreshStatePanel();
         }
     }, 1000);
@@ -1096,7 +1107,9 @@ def _inject_ui_enhancements(html: str) -> str:
             if (exportPdf) exportPdf.addEventListener('click', function () {
                 window.open('/api/export/' + encodeURIComponent(currentChatId) + '?format=html', '_blank');
             });
-        } catch (e) {}
+        } catch (e) {
+            console.error('Beratungsstatus-Panel konnte nicht aktualisiert werden:', e);
+        }
     }
 
     const tab = document.getElementById('advisor-panel-tab');
