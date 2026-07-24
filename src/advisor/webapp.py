@@ -68,6 +68,35 @@ _PROFIL_LABELS: dict[str, str] = {
 }
 
 
+# Enum-Literale menschenlesbar für Export/Anzeige (Booleans separat als Ja/Nein).
+_WERT_LABELS: dict[str, dict[str, str]] = {
+    "reaktion_kursverlust_20_prozent": {
+        "alles_verkaufen": "Alles verkaufen",
+        "teilweise_verkaufen": "Einen Teil verkaufen",
+        "beunruhigt_halten": "Beunruhigt halten",
+        "gelassen_halten": "Gelassen halten",
+        "nachkaufen": "Nachkaufen",
+    },
+    "anlageerfahrung": {
+        "keine": "Keine",
+        "grundkenntnisse": "Grundkenntnisse",
+        "fortgeschritten": "Fortgeschritten",
+        "sehr_erfahren": "Sehr erfahren",
+    },
+}
+
+
+def _formatiere_profilwert(feld: str, wert: Any) -> Any:
+    """Rohwert eines Profilfelds menschenlesbar machen (Ja/Nein statt True/False,
+    Klartext statt Enum-Literal). Unbekannte Werte bleiben unverändert."""
+    if isinstance(wert, bool):
+        return "Ja" if wert else "Nein"
+    mapping = _WERT_LABELS.get(feld)
+    if mapping and isinstance(wert, str) and wert in mapping:
+        return mapping[wert]
+    return wert
+
+
 def _session_state(deps: AdvisorDeps) -> dict:
     """Kompakter Session-Status für das Status-Panel der Web-UI (siehe _UI_ENHANCEMENTS)."""
     p = deps.profile
@@ -116,7 +145,7 @@ def _export_markdown(deps: AdvisorDeps) -> str:
     profil_werte = p.model_dump(exclude_none=True)
     for feld, label in _PROFIL_LABELS.items():
         if feld in profil_werte:
-            zeilen.append(f"- **{label}:** {profil_werte[feld]}")
+            zeilen.append(f"- **{label}:** {_formatiere_profilwert(feld, profil_werte[feld])}")
     if not any(feld in profil_werte for feld in _PROFIL_LABELS):
         zeilen.append("- _Noch keine Angaben erfasst._")
 
@@ -621,9 +650,10 @@ def _inject_ui_enhancements(html: str) -> str:
     let modelCount = null;
     let pendingProfile = null;
 
-    // Chat-ID grob aus der URL raten (Client-Routing der Chat-UI nutzt /{id});
-    // wird beim ersten echten /api/chat-Request unten ohnehin durch die
-    // tatsächliche ID aus dem Request-Body überschrieben/bestätigt.
+    // Konversations-ID = Pfad der URL (Client-Routing der Chat-UI nutzt /{id}).
+    // Das ist die maßgebliche Quelle: derselbe Wert wird unten in der
+    // Fetch-Interception auch als `id` des /api/chat-Requests gesetzt, damit
+    // Server-Profil, Panel und Willkommens-Maske dieselbe Konversation meinen.
     const pfadId = location.pathname.replace(/^\\/+/, '').trim();
     if (pfadId) currentChatId = pfadId;
 
@@ -726,22 +756,28 @@ def _inject_ui_enhancements(html: str) -> str:
     // fälschlich auch neue Chats unterdrücken, sobald irgendeine Konversation
     // jemals begonnen wurde.
     function aktualisiereEmptyOverlayFuerAktuellenChat() {
-        if (OHNE_FORMULAR.has(currentChatId)) {
+        // ID beim Aufruf festhalten: Die Antwort kommt asynchron, bis dahin kann
+        // ein Konversationswechsel `currentChatId` bereits geändert haben – sonst
+        // würde der falsche Chat in OHNE_FORMULAR landen (Maske dann dauerhaft
+        // unterdrückt) bzw. die Sichtbarkeit für die falsche Konversation gesetzt.
+        const ziel = currentChatId;
+        if (OHNE_FORMULAR.has(ziel)) {
             setOverlaySichtbar(false);
             return;
         }
-        originalFetch('/api/state/' + encodeURIComponent(currentChatId))
+        originalFetch('/api/state/' + encodeURIComponent(ziel))
             .then(function (r) { return r.ok ? r.json() : null; })
             .then(function (state) {
+                if (ziel !== currentChatId) return;  // zwischenzeitlich gewechselt
                 const hatFortschritt = !!(state && state.profilFortschritt && state.profilFortschritt.erfasst > 0);
                 if (hatFortschritt) {
-                    OHNE_FORMULAR.add(currentChatId);
+                    OHNE_FORMULAR.add(ziel);
                     setOverlaySichtbar(false);
                 } else {
                     setOverlaySichtbar(true);
                 }
             })
-            .catch(function () { setOverlaySichtbar(true); });
+            .catch(function () { if (ziel === currentChatId) setOverlaySichtbar(true); });
     }
     aktualisiereEmptyOverlayFuerAktuellenChat();
 
@@ -1015,12 +1051,24 @@ def _inject_ui_enhancements(html: str) -> str:
         return '<div class="viz-alloc-track">' + segs + '</div><div class="viz-legend">' + legende + '</div>';
     }
 
+    // Rohwerte des Profils (Booleans/Enum-Literale) menschenlesbar machen; die
+    // /api/state-Antwort bleibt bewusst roh (stabiler Daten-Contract), formatiert
+    // wird erst hier fürs Panel. Reaktions-Labels aus REAKTION_OPTIONEN wiederverwendet.
+    const REAKTION_LABELS = REAKTION_OPTIONEN.reduce(function (acc, o) { acc[o.wert] = o.label; return acc; }, {});
+    const ERFAHRUNG_LABELS = { keine: 'Keine', grundkenntnisse: 'Grundkenntnisse', fortgeschritten: 'Fortgeschritten', sehr_erfahren: 'Sehr erfahren' };
+    function formatProfilWert(v) {
+        if (typeof v === 'boolean') return v ? 'Ja' : 'Nein';
+        if (REAKTION_LABELS[v]) return REAKTION_LABELS[v];
+        if (ERFAHRUNG_LABELS[v]) return ERFAHRUNG_LABELS[v];
+        return v;
+    }
+
     function renderCards(state) {
         const parts = [];
         const fp = state.profilFortschritt || { erfasst: 0, gesamt: 0 };
         const pct = fp.gesamt ? Math.round((fp.erfasst / fp.gesamt) * 100) : 0;
         const profilZeilen = Object.entries(state.profil || {}).map(function (kv) {
-            return '<div class="advisor-kv"><span>' + esc(kv[0]) + '</span><b>' + esc(kv[1]) + '</b></div>';
+            return '<div class="advisor-kv"><span>' + esc(kv[0]) + '</span><b>' + esc(formatProfilWert(kv[1])) + '</b></div>';
         }).join('');
         parts.push(
             '<div class="advisor-card"><h4>Profil</h4>' +
@@ -1136,10 +1184,25 @@ def _inject_ui_enhancements(html: str) -> str:
         const isChat = url.includes('/api/chat');
 
         if (isChat) {
+            // Die gebündelte CDN-Chat-UI schickt als Request-`id` eine pro
+            // Browser-Tab KONSTANTE Zufalls-ID (einmalig beim Laden erzeugt,
+            // NICHT die je Konversation wechselnde URL). Ohne Eingriff würde der
+            // Server dadurch alle Konversationen eines Tabs auf DASSELBE Profil
+            // abbilden, während Panel und Willkommens-Maske ihre Konversation aus
+            // der URL ableiten – beides liefe auseinander (Profil im Panel mal
+            // leer, Maske taucht über einem laufenden Chat wieder auf). Deshalb
+            // wird die ausgehende ID hier auf die Konversation aus der URL
+            // gesetzt: so führt der Server je Konversation ein eigenes Profil und
+            // Panel/Maske sehen exakt denselben Wert wie der Chat-Request.
+            const pfad = location.pathname.replace(/^\\/+/, '').trim();
             try {
                 const bodyText = typeof init.body === 'string' ? init.body : null;
                 if (bodyText) {
                     const parsed = JSON.parse(bodyText);
+                    if (pfad) {
+                        parsed.id = pfad;
+                        args[1] = Object.assign({}, init, { body: JSON.stringify(parsed) });
+                    }
                     if (parsed && parsed.id) currentChatId = parsed.id;
                     if (parsed && parsed.model) lastUsedModel = parsed.model;
                 }

@@ -348,6 +348,28 @@ def test_export_liefert_markdown_mit_profil_und_strategie():
     assert "keine zugelassene Anlage-, Steuer- oder Rechtsberatung" in markdown
 
 
+def test_export_formatiert_booleans_und_enums_menschenlesbar():
+    """Rohwerte (True/False, Enum-Literale) dürfen im Export nicht durchschlagen,
+    sondern als Ja/Nein bzw. Klartext erscheinen."""
+    deps = AdvisorDeps()
+    deps.profile = _vollstaendiges_profil().model_copy(
+        update={
+            "depot_vorhanden": False,
+            "hat_konsumschulden": True,
+            "reaktion_kursverlust_20_prozent": "gelassen_halten",
+            "anlageerfahrung": "grundkenntnisse",
+        }
+    )
+    markdown = _export_markdown(deps)
+    assert "**Depot vorhanden:** Nein" in markdown
+    assert "**Konsumschulden vorhanden:** Ja" in markdown
+    assert "**Reaktion auf −20 % Kursverlust:** Gelassen halten" in markdown
+    assert "**Anlageerfahrung:** Grundkenntnisse" in markdown
+    # Rohe Literale/Booleans dürfen nicht mehr auftauchen.
+    assert "gelassen_halten" not in markdown
+    assert " True" not in markdown and " False" not in markdown
+
+
 def test_export_endpunkt_liefert_download_und_druckansicht():
     app = create_app(agent)
     client = TestClient(app)
